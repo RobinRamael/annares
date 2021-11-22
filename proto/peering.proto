@@ -1,0 +1,14 @@
+syntax = "proto3";
+package peering;
+
+service PeeringNode {
+  rpc Introduce (IntroductionRequest) returns (IntroductionReply);
+}
+
+message IntroductionRequest {
+  string senderAdress = 1;
+}
+
+message IntroductionReply {
+  repeated string knownPeers = 1;
+}
