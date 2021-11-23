@@ -31,7 +31,6 @@ impl PeeringNode for MyPeeringNode {
         println!("received introduction from {:?}", new_peer_addr);
 
         let mut locked_peers = self.known_peers.lock().unwrap();
-        println!("I currently know {:?}", locked_peers);
 
         // format peer socket addrs into strings
         let peer_addrs = locked_peers
@@ -41,7 +40,8 @@ impl PeeringNode for MyPeeringNode {
 
         locked_peers.insert(new_peer_addr.parse().unwrap());
 
-        println!("known peers: {:?}", locked_peers);
+        println!("new known peers: {:?}", locked_peers);
+        println!("=================================");
 
         Ok(Response::new(IntroductionReply {
             known_peers: peer_addrs,
@@ -87,12 +87,10 @@ async fn send_introduction(
 async fn mingle(
     source_addr: SocketAddr,
     bootstrap_addr: SocketAddr,
-    known_peers: HashSet<SocketAddr>,
+    known_peers: &HashSet<SocketAddr>,
 ) -> Result<HashSet<SocketAddr>, tonic::transport::Error> {
     // let locked_peers = known_peers.lock().unwrap();
 
-    println!("mingling...");
-    dbg!(bootstrap_addr, known_peers);
     let new_peers: HashSet<SocketAddr> = send_introduction(source_addr, bootstrap_addr)
         .await?
         .into_iter()
@@ -105,9 +103,9 @@ async fn mingle(
         })
         .collect();
 
-    dbg!(&new_peers);
+    let all_peers: HashSet<_> = new_peers.union(&known_peers).map(|x| *x).collect();
 
-    Ok(new_peers)
+    Ok(all_peers)
 }
 
 fn ipv6_loopback_socketaddr(port: u16) -> SocketAddr {
@@ -128,20 +126,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let peers;
 
-    dbg!(&args);
-
     if args.bootstrap_peer.is_some() {
         let peer = args.bootstrap_peer.unwrap();
         peers = mingle(
             ipv6_loopback_socketaddr(args.port),
             peer,
-            HashSet::from_iter(vec![peer]),
+            &HashSet::from_iter(vec![peer]),
         )
         .await?;
     } else {
         peers = HashSet::new()
     }
 
+    println!("all peers known: {:?}", &peers);
     let my_peering_node = MyPeeringNode::new(args.port, peers);
 
     println!("awaiting further introductions...");
