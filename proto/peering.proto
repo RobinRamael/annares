@@ -3,6 +3,7 @@ package peering;
 
 service PeeringNode {
   rpc Introduce (IntroductionRequest) returns (IntroductionReply);
+  rpc ListPeers (ListPeersRequest) returns (ListPeersReply);
 }
 
 message IntroductionRequest {
@@ -12,3 +13,10 @@ message IntroductionRequest {
 message IntroductionReply {
   repeated string knownPeers = 1;
 }
+
+message ListPeersRequest {}
+
+message ListPeersReply {
+  repeated string knownPeers = 1;
+}
+
