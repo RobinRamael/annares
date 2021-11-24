@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use structopt::StructOpt;
 
 mod utils;
@@ -6,7 +6,10 @@ mod utils;
 mod peering;
 use peering::peering_node_client::PeeringNodeClient;
 use peering::peering_node_server::{PeeringNode, PeeringNodeServer};
-use peering::{IntroductionReply, IntroductionRequest, ListPeersReply, ListPeersRequest};
+use peering::{
+    GetKeyReply, GetKeyRequest, IntroductionReply, IntroductionRequest, ListPeersReply,
+    ListPeersRequest,
+};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -43,6 +46,7 @@ impl PeeringNode for MyPeeringNode {
             known_peers: peer_addrs,
         }))
     }
+
     async fn list_peers(
         &self,
         _: Request<ListPeersRequest>,
@@ -50,6 +54,13 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(ListPeersReply {
             known_peers: format_addrs(&self.known_peers.lock().unwrap()),
         }))
+    }
+
+    async fn get_key(
+        &self,
+        request: Request<GetKeyRequest>,
+    ) -> Result<Response<GetKeyReply>, Status> {
+        unimplemented!();
     }
 }
 
@@ -60,7 +71,7 @@ fn format_addrs(addrs: &HashSet<SocketAddr>) -> Vec<String> {
 impl MyPeeringNode {
     fn new(port: u16, known_peers: HashSet<SocketAddr>) -> MyPeeringNode {
         MyPeeringNode {
-            addr: ipv6_loopback_socketaddr(port),
+            addr: utils::ipv6_loopback_socketaddr(port),
             known_peers: Arc::new(Mutex::new(known_peers)),
         }
     }

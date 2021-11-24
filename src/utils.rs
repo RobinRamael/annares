@@ -2,7 +2,7 @@
                      // print_peers isn't used while it clearly is...
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 pub fn print_peers(peers: &HashSet<SocketAddr>) {
     if peers.is_empty() {

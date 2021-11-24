@@ -4,6 +4,8 @@ package peering;
 service PeeringNode {
   rpc Introduce (IntroductionRequest) returns (IntroductionReply);
   rpc ListPeers (ListPeersRequest) returns (ListPeersReply);
+
+  rpc getKey (GetKeyRequest) returns (GetKeyReply);
 }
 
 message IntroductionRequest {
@@ -19,4 +21,13 @@ message ListPeersRequest {}
 message ListPeersReply {
   repeated string knownPeers = 1;
 }
+
+message GetKeyRequest {
+  /* string */ 
+}
+
+message GetKeyReply {
+
+}
+
 
