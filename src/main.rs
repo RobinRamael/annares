@@ -40,8 +40,7 @@ impl PeeringNode for MyPeeringNode {
 
         locked_peers.insert(new_peer_addr.parse().unwrap());
 
-        println!("new known peers: {:?}", locked_peers);
-        println!("=================================");
+        print_peers(&locked_peers);
 
         Ok(Response::new(IntroductionReply {
             known_peers: peer_addrs,
@@ -49,7 +48,7 @@ impl PeeringNode for MyPeeringNode {
     }
 }
 
-fn build_grpc_url(addr: SocketAddr) -> String {
+fn build_grpc_url(addr: &SocketAddr) -> String {
     format!("http://{}", addr)
 }
 
@@ -60,56 +59,64 @@ impl MyPeeringNode {
             known_peers: Arc::new(Mutex::new(known_peers)),
         }
     }
-}
 
-async fn send_introduction(
-    source_addr: SocketAddr,
-    target_addr: SocketAddr,
-) -> Result<HashSet<SocketAddr>, tonic::transport::Error> {
-    let mut client = PeeringNodeClient::connect(build_grpc_url(target_addr)).await?;
+    async fn mingle(&self) -> Result<(), tonic::transport::Error> {
+        let mut locked_peers = self.known_peers.lock().unwrap();
 
-    let request = tonic::Request::new(IntroductionRequest {
-        sender_adress: source_addr.to_string(),
-    });
+        let mut all_new_peers: HashSet<SocketAddr> = HashSet::new();
 
-    let response = client.introduce(request).await.unwrap();
+        for known_peer in locked_peers.iter() {
+            println!("Sending introduction to {:?}", known_peer);
+            let new_peers = self.send_introduction(known_peer).await?;
 
-    let new_peers = response
-        .get_ref()
-        .known_peers
-        .iter()
-        .filter_map(|addr_string| addr_string.parse::<SocketAddr>().ok())
-        .collect();
+            for new_peer in &new_peers {
+                self.send_introduction(&new_peer).await?;
+            }
 
-    Ok(new_peers)
-}
+            println!("received peers {:?}", &new_peers);
 
-async fn mingle(
-    source_addr: SocketAddr,
-    bootstrap_addr: SocketAddr,
-    known_peers: &HashSet<SocketAddr>,
-) -> Result<HashSet<SocketAddr>, tonic::transport::Error> {
-    // let locked_peers = known_peers.lock().unwrap();
+            all_new_peers.extend(new_peers);
+        }
 
-    let new_peers: HashSet<SocketAddr> = send_introduction(source_addr, bootstrap_addr)
-        .await?
-        .into_iter()
-        .map(|peer| {
-            tokio::task::spawn(async move {
-                println!("sending intro to {:?}", peer);
-                send_introduction(source_addr, peer).await.unwrap();
-            });
-            peer
-        })
-        .collect();
+        locked_peers.extend(all_new_peers.iter());
 
-    let all_peers: HashSet<_> = new_peers.union(&known_peers).map(|x| *x).collect();
+        print_peers(&locked_peers);
 
-    Ok(all_peers)
+        Ok(())
+    }
+
+    async fn send_introduction(
+        &self,
+        target_addr: &SocketAddr,
+    ) -> Result<HashSet<SocketAddr>, tonic::transport::Error> {
+        let mut client = PeeringNodeClient::connect(build_grpc_url(target_addr)).await?;
+
+        let request = tonic::Request::new(IntroductionRequest {
+            sender_adress: self.addr.to_string(),
+        });
+
+        let response = client.introduce(request).await.unwrap();
+
+        let new_peers = response
+            .get_ref()
+            .known_peers
+            .iter()
+            .filter_map(|addr_string| addr_string.parse::<SocketAddr>().ok())
+            .collect();
+
+        Ok(new_peers)
+    }
 }
 
 fn ipv6_loopback_socketaddr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0x1)), port)
+}
+
+fn print_peers(peers: &HashSet<SocketAddr>) {
+    println!("KNOWN PEERS: ");
+    for p in peers {
+        println!("   - {:?}", p);
+    }
 }
 
 #[derive(StructOpt, Debug)]
@@ -124,22 +131,18 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::from_args();
 
-    let peers;
-
-    if args.bootstrap_peer.is_some() {
-        let peer = args.bootstrap_peer.unwrap();
-        peers = mingle(
-            ipv6_loopback_socketaddr(args.port),
-            peer,
-            &HashSet::from_iter(vec![peer]),
-        )
-        .await?;
+    let peers = if args.bootstrap_peer.is_some() {
+        HashSet::from_iter(vec![args.bootstrap_peer.unwrap()])
     } else {
-        peers = HashSet::new()
-    }
+        HashSet::new()
+    };
 
-    println!("all peers known: {:?}", &peers);
+    println!("Running on port {:?}", args.port);
+    println!("bootstrapping using {:?}", args.bootstrap_peer);
+    println!("");
     let my_peering_node = MyPeeringNode::new(args.port, peers);
+
+    my_peering_node.mingle().await?;
 
     println!("awaiting further introductions...");
 
