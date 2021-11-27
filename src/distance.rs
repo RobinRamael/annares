@@ -34,11 +34,7 @@ where
         if self.ge(&rhs) {
             self - rhs
         } else {
-            dbg!(&rhs.arr);
-            dbg!(&self.arr);
-            let sub = rhs - self;
-            dbg!(&sub.arr);
-            Self::max() - (sub - Self::one())
+            Self::max() - (rhs - self - Self::one())
         }
     }
 
@@ -76,20 +72,28 @@ where
         let mut result: Self = Arru8::new(GenericArray::default());
 
         for (i, (n1, n2)) in self.arr.iter().zip(rhs.arr.iter()).enumerate() {
-            let borrowed_n1 = n1 - (borrow * 1);
-
             let d: u8;
 
-            if &borrowed_n1 >= n2 {
-                d = borrowed_n1 - n2;
-                borrow = 0;
-            } else {
-                // we do this instead of simply n2 + 256 - borrowed_n1 to ensure we stay within the
-                // bounds of u8:
-                d = 255 - (n2 - borrowed_n1) + 1;
+            if *n1 == 0 && borrow == 1 {
+                // special case where we have to borrow from a 0
+                // the current 0 borrows from the next one to become 256
+                // and lends 1 to the previous one, becoming 255. my brain hurts.
+                d = 255 - n2;
                 borrow = 1;
+            } else {
+                let borrowed_n1 = n1 - (borrow * 1);
+                if &borrowed_n1 >= n2 {
+                    d = borrowed_n1 - n2;
+                    borrow = 0;
+                } else {
+                    // we do this instead of simply n2 + 256 - borrowed_n1
+                    // to ensure we stay within the bounds of u8:
+                    d = 255 - (n2 - borrowed_n1) + 1;
+                    borrow = 1;
+                }
             }
-            result.arr[i] = d as u8;
+
+            result.arr[i] = d;
         }
 
         result
@@ -157,7 +161,16 @@ mod tests {
     fn test_sub6() {
         let n1 = Arru8::new(arr![u8; 1, 0, 2]);
         let n2 = Arru8::new(arr![u8; 2, 0, 1]);
-        let zero = Arru8::new(arr![u8; 2, 255, 253]);
+        let zero = Arru8::new(arr![u8; 255, 255, 0]);
+
+        assert_eq!(n1 - n2, zero);
+    }
+
+    #[test]
+    fn test_sub7() {
+        let n1 = Arru8::new(arr![u8; 1, 0, 0, 2]);
+        let n2 = Arru8::new(arr![u8; 2, 0, 0, 1]);
+        let zero = Arru8::new(arr![u8; 255, 255, 255, 0]);
 
         assert_eq!(n1 - n2, zero);
     }
@@ -183,6 +196,16 @@ mod tests {
 
     #[test]
     fn test_cyclic_dist2() {
+        let n1 = Arru8::new(arr![u8;  255, 255, 255, 255, 255, 255, 255]);
+        let n2 = Arru8::new(arr![u8;  0, 0, 0, 0, 0, 0, 0]);
+
+        let d = Arru8::new(arr![u8; 1, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(n1.cyclic_distance(n2), d);
+    }
+
+    #[test]
+    fn test_cyclic_dist3() {
         let n1 = Arru8::new(arr![u8;  8, 56, 133, 7, 201]);
         let n2 = Arru8::new(arr![u8;  58, 23, 133, 6, 52]);
 
