@@ -2,7 +2,7 @@ use generic_array::{arr, ArrayLength, GenericArray};
 use std::cmp;
 use std::ops;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Arru8<N: ArrayLength<u8> + Eq> {
     //big endian!
     arr: GenericArray<u8, N>,
@@ -18,19 +18,15 @@ where
 
     fn max() -> Self {
         let mut max_array = GenericArray::default();
-        dbg!(&max_array);
         for n in &mut max_array {
             *n = u8::MAX;
         }
-        dbg!(&max_array);
         Arru8::new(max_array)
     }
 
     fn one() -> Self {
         let mut one = GenericArray::default();
-        let last_el_idx = one.len() - 1;
-        one[last_el_idx] = 1;
-        dbg!(&one);
+        one[0] = 1;
         Arru8::new(one)
     }
 
@@ -38,15 +34,20 @@ where
         if self.ge(&rhs) {
             self - rhs
         } else {
-            Self::max() - (rhs - self - Self::one())
+            dbg!(&rhs.arr);
+            dbg!(&self.arr);
+            let sub = rhs - self;
+            dbg!(&sub.arr);
+            Self::max() - (sub - Self::one())
         }
     }
 
     fn cyclic_distance(self, rhs: Self) -> Self {
-        let d1 = self.cyclic_sub(rhs);
-        let d2 = rhs.cyclic_sub(self);
+        let lhs = self.clone(); // there has to be a better way...
+        let d1 = self.cyclic_sub(rhs.clone());
+        let d2 = rhs.cyclic_sub(lhs);
 
-        if d1 >= d2 {
+        if d1 <= d2 {
             d1
         } else {
             d2
@@ -70,8 +71,6 @@ where
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
-        // assert!(self >= rhs);
-
         let mut borrow = 0;
 
         let mut result: Self = Arru8::new(GenericArray::default());
@@ -81,7 +80,7 @@ where
 
             let d: u8;
 
-            if n1 >= n2 {
+            if &borrowed_n1 >= n2 {
                 d = borrowed_n1 - n2;
                 borrow = 0;
             } else {
@@ -101,7 +100,7 @@ where
 mod tests {
     use super::*;
     #[test]
-    fn test_dist3() {
+    fn test_sub3() {
         let n1 = Arru8::new(arr![u8; 231, 45, 186]);
         let n2 = Arru8::new(arr![u8; 134, 251, 76]);
         let d = Arru8::new(arr![u8; 97, 50, 109]);
@@ -110,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dist1() {
+    fn test_sub1() {
         let n1 = Arru8::new(arr![u8;  255]);
         let n2 = Arru8::new(arr![u8;  48]);
         let d = Arru8::new(arr![u8; 255 - 48]);
@@ -119,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dist2() {
+    fn test_sub2() {
         let n1 = Arru8::new(arr![u8;  1, 1, 255]);
         let n2 = Arru8::new(arr![u8;  255, 255, 1]);
         let d = Arru8::new(arr![u8; 2, 1, 253]);
@@ -128,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dist3_eq() {
+    fn test_sub3_eq() {
         let n1 = Arru8::new(arr![u8; 231, 45, 186]);
         let n2 = Arru8::new(arr![u8; 231, 45, 186]);
         let zero = Arru8::new(arr![u8; 0,0,0]);
@@ -137,20 +136,67 @@ mod tests {
     }
 
     #[test]
-    fn test_cyclic_dist1_eq() {
+    fn test_sub4() {
+        let n1 = Arru8::new(arr![u8; 231, 45, 186]);
+        let n2 = Arru8::new(arr![u8; 230, 45, 185]);
+        let zero = Arru8::new(arr![u8; 1,0,1]);
+
+        assert_eq!(n1 - n2, zero);
+    }
+
+    #[test]
+    fn test_sub5() {
+        let n1 = Arru8::new(arr![u8; 1, 45, 255]);
+        let n2 = Arru8::new(arr![u8; 255, 45, 1]);
+        let zero = Arru8::new(arr![u8; 2, 255, 253]);
+
+        assert_eq!(n1 - n2, zero);
+    }
+
+    #[test]
+    fn test_sub6() {
+        let n1 = Arru8::new(arr![u8; 1, 0, 2]);
+        let n2 = Arru8::new(arr![u8; 2, 0, 1]);
+        let zero = Arru8::new(arr![u8; 2, 255, 253]);
+
+        assert_eq!(n1 - n2, zero);
+    }
+
+    #[test]
+    fn test_cyclic_sub() {
         let n1 = Arru8::new(arr![u8;  48]);
         let n2 = Arru8::new(arr![u8;  134]);
-        let d = Arru8::new(arr![u8; 170]);
+        let d = Arru8::new(arr![u8; 86]);
 
         assert_eq!(n1.cyclic_distance(n2), d);
     }
 
     #[test]
-    fn test_cyclic_dist3_eq() {
+    fn test_cyclic_dist1() {
         let n1 = Arru8::new(arr![u8;  255]);
         let n2 = Arru8::new(arr![u8;  0]);
 
         let d = Arru8::new(arr![u8; 1]);
+
+        assert_eq!(n1.cyclic_distance(n2), d);
+    }
+
+    #[test]
+    fn test_cyclic_dist2() {
+        let n1 = Arru8::new(arr![u8;  8, 56, 133, 7, 201]);
+        let n2 = Arru8::new(arr![u8;  58, 23, 133, 6, 52]);
+
+        let d = Arru8::new(arr![u8; 50, 223, 255, 254, 106]);
+
+        assert_eq!(n1.cyclic_distance(n2), d);
+    }
+
+    #[test]
+    fn test_cyclic_dist_eq() {
+        let n1 = Arru8::new(arr![u8;  251, 54, 6]);
+        let n2 = Arru8::new(arr![u8;  251, 54, 6]);
+
+        let d = Arru8::new(arr![u8; 0, 0, 0]);
 
         assert_eq!(n1.cyclic_distance(n2), d);
     }
