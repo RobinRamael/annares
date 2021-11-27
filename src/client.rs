@@ -2,14 +2,15 @@ use std::net::{AddrParseError, SocketAddr};
 
 use structopt::StructOpt;
 
-mod peering;
-use peering::peering_node_client::PeeringNodeClient;
-use peering::ListPeersRequest;
+mod grpc;
+use grpc::peering_node_client::PeeringNodeClient;
+use grpc::ListPeersRequest;
 
 mod utils;
 use utils::build_grpc_url;
 
-mod distance;
+mod hash;
+use hash::Hash;
 
 #[derive(StructOpt, Debug)]
 struct BaseCli {
@@ -64,8 +65,8 @@ struct GetKeyArgs {
     key: String,
 }
 
-async fn get_key(peer: &SocketAddr, key: String) -> Result<(), Box<dyn std::error::Error>> {
-    unimplemented!()
+async fn get_key(_peer: &SocketAddr, _key: String) -> Result<(), Box<dyn std::error::Error>> {
+    todo!()
 }
 
 #[derive(StructOpt, Debug)]
@@ -76,28 +77,28 @@ struct StoreValueArgs {
     value: String,
 }
 
-async fn store_value(peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
-    use sha2::{Digest, Sha256};
+async fn store_value(_peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
+    let h1 = Hash::from_string(value);
 
+    let h2 = Hash::from_string("hello!".into());
 
+    for x1 in h1.arr.iter() {
+        print!("{:4}", x1);
+    }
+    println!("");
 
-    // dbg!(distance::Arru8::<u8>::max());
+    for x1 in h2.arr.iter() {
+        print!("{:4}", x1);
+    }
+    let dist = h1.cyclic_distance(h2);
 
-    // let res = cyclic_distance3(&[231, 45, 186], &[134, 251, 76]);
-    // dbg!(res);
-
-    // dbg!(&value);
-    // let mut hasher = Sha256::default();
-    // hasher.update(&value);
-    // let result = hasher.finalize();
-    // println!("sha256 before write: {:x}", result);
-
-    // println!("{}", result);
-
-    // for n in result.iter() {
-    //     print!("{} ", n)
-    // }
-    // println!();
+    println!("");
+    println!("----------------------------------------------------------------------------");
+    for x1 in dist.arr.iter() {
+        print!("{:4}", x1);
+    }
+    println!("");
+    println!("");
 
     Ok(())
 }

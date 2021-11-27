@@ -3,10 +3,10 @@ use structopt::StructOpt;
 
 mod utils;
 
-mod peering;
-use peering::peering_node_client::PeeringNodeClient;
-use peering::peering_node_server::{PeeringNode, PeeringNodeServer};
-use peering::{
+mod grpc;
+use grpc::peering_node_client::PeeringNodeClient;
+use grpc::peering_node_server::{PeeringNode, PeeringNodeServer};
+use grpc::{
     GetKeyReply, GetKeyRequest, IntroductionReply, IntroductionRequest, ListPeersReply,
     ListPeersRequest,
 };
@@ -16,9 +16,6 @@ use std::sync::{Arc, Mutex};
 
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-
-mod distance;
-use distance::*;
 
 #[derive(Debug)]
 pub struct MyPeeringNode {
@@ -61,7 +58,7 @@ impl PeeringNode for MyPeeringNode {
 
     async fn get_key(
         &self,
-        request: Request<GetKeyRequest>,
+        _request: Request<GetKeyRequest>,
     ) -> Result<Response<GetKeyReply>, Status> {
         unimplemented!();
     }

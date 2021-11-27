@@ -1,18 +1,34 @@
-use generic_array::{arr, ArrayLength, GenericArray};
+use generic_array::{ArrayLength, GenericArray};
 use std::cmp;
 use std::ops;
+
+use sha2::{Digest, Sha256};
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Arru8<N: ArrayLength<u8> + Eq> {
     //big endian!
-    arr: GenericArray<u8, N>,
+    pub arr: GenericArray<u8, N>,
+}
+
+pub type Hash = Arru8<<Sha256 as Digest>::OutputSize>;
+
+impl Hash {
+    pub fn from_string(s: String) -> Self {
+        let mut hasher = Sha256::default();
+
+        hasher.update(s);
+
+        let result = hasher.finalize();
+
+        Hash::new(result)
+    }
 }
 
 impl<N> Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
 {
-    fn new(arr: GenericArray<u8, N>) -> Self {
+    pub fn new(arr: GenericArray<u8, N>) -> Self {
         Arru8 { arr }
     }
 
@@ -38,7 +54,7 @@ where
         }
     }
 
-    fn cyclic_distance(self, rhs: Self) -> Self {
+    pub fn cyclic_distance(self, rhs: Self) -> Self {
         let lhs = self.clone(); // there has to be a better way...
         let d1 = self.cyclic_sub(rhs.clone());
         let d2 = rhs.cyclic_sub(lhs);
@@ -56,7 +72,13 @@ where
     N: ArrayLength<u8> + Eq,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.arr.partial_cmp(&other.arr)
+        for (n1, n2) in self.arr.iter().zip(other.arr.iter()).rev() {
+            if n1 != n2 {
+                return Some(n1.cmp(n2));
+            }
+        }
+
+        Some(cmp::Ordering::Equal)
     }
 }
 
@@ -103,6 +125,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use generic_array::arr;
+
     #[test]
     fn test_sub3() {
         let n1 = Arru8::new(arr![u8; 231, 45, 186]);
@@ -176,6 +201,14 @@ mod tests {
     }
 
     #[test]
+    fn test_ge() {
+        let n1 = Arru8::new(arr![u8; 1, 0, 0, 2]);
+        let n2 = Arru8::new(arr![u8; 2, 0, 0, 1]);
+
+        assert!(n1 > n2);
+    }
+
+    #[test]
     fn test_cyclic_sub() {
         let n1 = Arru8::new(arr![u8;  48]);
         let n2 = Arru8::new(arr![u8;  134]);
@@ -222,5 +255,49 @@ mod tests {
         let d = Arru8::new(arr![u8; 0, 0, 0]);
 
         assert_eq!(n1.cyclic_distance(n2), d);
+    }
+
+    #[test]
+    fn test_cyclic_dist4() {
+        let n2 = Arru8::new(arr![u8;  16, 112]);
+        let n1 = Arru8::new(arr![u8;  208, 139]);
+
+        let d = Arru8::new(arr![u8; 192, 27]);
+
+        assert_eq!(n1.cyclic_distance(n2), d);
+    }
+
+    extern crate quickcheck;
+    use generic_array::typenum::{Unsigned, U3};
+    use quickcheck::*;
+
+    impl<N> Arbitrary for Arru8<N>
+    where
+        N: ArrayLength<u8> + Eq,
+    {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let mut arr = GenericArray::default();
+            for n in arr.iter_mut() {
+                *n = u8::arbitrary(g);
+            }
+
+            Arru8::<_> { arr: arr.into() }
+        }
+    }
+
+    quickcheck! {
+        fn symmetric(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
+            let h1c = h1.clone();
+            let h2c = h2.clone();
+            h1.cyclic_distance(h2c) == h2.cyclic_distance(h1c)
+        }
+
+        fn smallerthanhalf(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
+            let d = h1.cyclic_distance(h2);
+            let mut half_max: [u8; 3]= [0; 3];
+            half_max[U3::to_usize() - 1] = 128;
+
+            d <= Arru8::<U3> {arr: half_max.into()}
+        }
     }
 }

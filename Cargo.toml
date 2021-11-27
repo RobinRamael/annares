@@ -21,3 +21,6 @@ generic-array = "0.14.4"
 
 [build-dependencies]
 tonic-build = "0.6"
+
+[dev-dependencies]
+quickcheck = "1.0.3"
