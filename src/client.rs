@@ -79,6 +79,10 @@ struct StoreValueArgs {
 async fn store_value(peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
     use sha2::{Digest, Sha256};
 
+
+
+    // dbg!(distance::Arru8::<u8>::max());
+
     // let res = cyclic_distance3(&[231, 45, 186], &[134, 251, 76]);
     // dbg!(res);
 

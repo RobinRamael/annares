@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+mod distance;
+use distance::*;
+
 #[derive(Debug)]
 pub struct MyPeeringNode {
     pub addr: SocketAddr,
