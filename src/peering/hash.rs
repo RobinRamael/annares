@@ -36,15 +36,6 @@ where
     }
 }
 
-// impl<N> std::str::FromStr for Arru8<N>
-// where
-//     N: ArrayLength<u8> + Eq,
-// {
-//     type Err = hex::FromHexError;
-
-//     // fn from_str(s: &str) -> Result<Self, Self::Err> {}
-// }
-
 impl<N> TryFrom<String> for Arru8<N>
 where
     N: ArrayLength<u8> + Eq,

@@ -1,16 +1,13 @@
+mod peering;
+use peering::grpc::peering_node_client::PeeringNodeClient;
+use peering::grpc::ListPeersRequest;
+use peering::hash::Hash;
+use peering::node::KnownPeer;
+use peering::utils::build_grpc_url;
+
 use std::net::{AddrParseError, SocketAddr};
 
 use structopt::StructOpt;
-
-mod grpc;
-use grpc::peering_node_client::PeeringNodeClient;
-use grpc::ListPeersRequest;
-
-mod utils;
-use utils::build_grpc_url;
-
-mod hash;
-use hash::Hash;
 
 #[derive(StructOpt, Debug)]
 struct BaseCli {
@@ -50,8 +47,13 @@ async fn list_peers(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>>
 
     let response = client.list_peers(request).await.unwrap();
 
-    for peer in response.get_ref().known_peers.iter() {
-        // println!("{}", peer);
+    for peer in response
+        .get_ref()
+        .known_peers
+        .iter()
+        .filter_map(|p| KnownPeer::try_from(p.clone()).ok())
+    {
+        println!("{:?}", peer);
     }
 
     Ok(())
