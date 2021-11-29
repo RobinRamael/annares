@@ -8,19 +8,39 @@ use grpc::peering_node_client::PeeringNodeClient;
 use grpc::peering_node_server::{PeeringNode, PeeringNodeServer};
 use grpc::{
     GetKeyReply, GetKeyRequest, IntroductionReply, IntroductionRequest, ListPeersReply,
-    ListPeersRequest,
+    ListPeersRequest, StoreReply, StoreRequest,
 };
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+mod hash;
+use hash::Hash;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+#[derive(Debug, PartialEq, Eq, std::hash::Hash, Clone)]
+pub struct KnownPeer {
+    pub addr: SocketAddr,
+    pub hash: Hash,
+}
+
 #[derive(Debug)]
 pub struct MyPeeringNode {
     pub addr: SocketAddr,
-    pub known_peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    pub hash: Hash,
+    pub known_peers: Arc<Mutex<HashSet<KnownPeer>>>,
+    pub data_shard: Arc<RwLock<HashMap<Hash, String>>>,
+}
+
+impl KnownPeer {
+    fn new(addr: SocketAddr) -> Self {
+        KnownPeer {
+            addr,
+            hash: Hash::hash(format_addr(&addr)),
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -36,24 +56,31 @@ impl PeeringNode for MyPeeringNode {
         let mut locked_peers = self.known_peers.lock().unwrap();
 
         // format peer socket addrs into strings
-        let peer_addrs = format_addrs(&locked_peers);
+        // let peer_addrs = format_addrs(&locked_peers);
 
-        locked_peers.insert(new_peer_addr.parse().unwrap());
+        locked_peers.insert(KnownPeer::new(new_peer_addr.parse().unwrap()));
 
-        utils::print_peers(&locked_peers);
+        // utils::print_peers(&locked_peers);
 
-        Ok(Response::new(IntroductionReply {
-            known_peers: peer_addrs,
-        }))
+        let known_peers = locked_peers
+            .iter()
+            .map(|p| grpc::Peer::from(p.clone()))
+            .collect();
+
+        println!("responding with my known peers");
+
+        Ok(Response::new(IntroductionReply { known_peers }))
     }
 
     async fn list_peers(
         &self,
         _: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
-        Ok(Response::new(ListPeersReply {
-            known_peers: format_addrs(&self.known_peers.lock().unwrap()),
-        }))
+        let locked_peers = self.known_peers.lock().unwrap();
+
+        let ps = locked_peers.iter().map(|p| p.clone().into()).collect();
+
+        Ok(Response::new(ListPeersReply { known_peers: ps }))
     }
 
     async fn get_key(
@@ -62,41 +89,80 @@ impl PeeringNode for MyPeeringNode {
     ) -> Result<Response<GetKeyReply>, Status> {
         unimplemented!();
     }
+
+    async fn store(&self, _request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
+        todo!()
+    }
 }
 
-fn format_addrs(addrs: &HashSet<SocketAddr>) -> Vec<String> {
-    addrs.iter().map(|addr| format!("{}", addr)).collect()
+fn format_addr(addr: &SocketAddr) -> String {
+    format!("{}", addr)
+}
+
+impl From<KnownPeer> for grpc::Peer {
+    fn from(peering_node: KnownPeer) -> Self {
+        grpc::Peer {
+            addr: format_addr(&peering_node.addr),
+            hash: peering_node.hash.as_hex_string(),
+        }
+    }
+}
+
+pub enum PeerFromGRPCError {
+    Hex(hex::FromHexError),
+    Addr(std::net::AddrParseError),
+}
+
+impl TryFrom<grpc::Peer> for KnownPeer {
+    type Error = PeerFromGRPCError;
+
+    fn try_from(grpc_peer: grpc::Peer) -> Result<Self, Self::Error> {
+        let addr = match grpc_peer.addr.parse::<SocketAddr>() {
+            Err(e) => return Err(PeerFromGRPCError::Addr(e)),
+            Ok(a) => a,
+        };
+
+        let hash = match grpc_peer.hash.try_into() {
+            Err(e) => return Err(PeerFromGRPCError::Hex(e)),
+            Ok(h) => h,
+        };
+
+        Ok(KnownPeer { addr, hash })
+    }
 }
 
 impl MyPeeringNode {
-    fn new(port: u16, known_peers: HashSet<SocketAddr>) -> MyPeeringNode {
+    fn new(port: u16, known_peers: HashSet<KnownPeer>) -> MyPeeringNode {
+        let addr = utils::ipv6_loopback_socketaddr(port);
         MyPeeringNode {
-            addr: utils::ipv6_loopback_socketaddr(port),
+            addr,
+            hash: Hash::hash(format_addr(&addr)),
             known_peers: Arc::new(Mutex::new(known_peers)),
+            data_shard: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     async fn mingle(&self) -> Result<(), tonic::transport::Error> {
         let mut locked_peers = self.known_peers.lock().unwrap();
 
-        let mut all_new_peers: HashSet<SocketAddr> = HashSet::new();
+        let mut all_new_peers: HashSet<KnownPeer> = HashSet::new();
 
         for known_peer in locked_peers.iter() {
             println!("Sending introduction to {:?}", known_peer);
-            let new_peers = self.send_introduction(known_peer).await?;
 
-            for new_peer in &new_peers {
-                self.send_introduction(&new_peer).await?;
+            let new_peers = self.send_introduction(&known_peer.addr).await?;
+
+            println!("Received new peers {:?}", &new_peers);
+
+            for new_peer in new_peers.iter().filter(|p| p.addr != self.addr) {
+                self.send_introduction(&new_peer.addr).await?;
             }
 
+            all_new_peers.extend(new_peers.clone());
+
             println!("received peers {:?}", &new_peers);
-
-            all_new_peers.extend(new_peers);
         }
-
-        locked_peers.extend(all_new_peers.iter());
-
-        utils::print_peers(&locked_peers);
+        locked_peers.extend(all_new_peers);
 
         Ok(())
     }
@@ -104,8 +170,11 @@ impl MyPeeringNode {
     async fn send_introduction(
         &self,
         target_addr: &SocketAddr,
-    ) -> Result<HashSet<SocketAddr>, tonic::transport::Error> {
-        let mut client = PeeringNodeClient::connect(utils::build_grpc_url(target_addr)).await?;
+    ) -> Result<HashSet<KnownPeer>, tonic::transport::Error> {
+        let target_url = utils::build_grpc_url(target_addr);
+        dbg!(&target_url);
+
+        let mut client = PeeringNodeClient::connect(target_url).await?;
 
         let request = tonic::Request::new(IntroductionRequest {
             sender_adress: self.addr.to_string(),
@@ -114,10 +183,10 @@ impl MyPeeringNode {
         let response = client.introduce(request).await.unwrap();
 
         let new_peers = response
-            .get_ref()
+            .into_inner()
             .known_peers
-            .iter()
-            .filter_map(|addr_string| addr_string.parse::<SocketAddr>().ok())
+            .into_iter()
+            .filter_map(|peer| peer.try_into().ok())
             .collect();
 
         Ok(new_peers)
@@ -137,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::from_args();
 
     let peers = if args.bootstrap_peer.is_some() {
-        HashSet::from_iter(vec![args.bootstrap_peer.unwrap()])
+        HashSet::from_iter(vec![KnownPeer::new(args.bootstrap_peer.unwrap())])
     } else {
         HashSet::new()
     };

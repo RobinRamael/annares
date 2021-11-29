@@ -51,7 +51,7 @@ async fn list_peers(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>>
     let response = client.list_peers(request).await.unwrap();
 
     for peer in response.get_ref().known_peers.iter() {
-        println!("{}", peer);
+        // println!("{}", peer);
     }
 
     Ok(())
@@ -78,27 +78,21 @@ struct StoreValueArgs {
 }
 
 async fn store_value(_peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
-    let h1 = Hash::from_string(value);
+    let h1 = Hash::hash(value);
+    println!("{:?}", h1.arr);
+    let s = format!("{:}", h1.as_hex_string());
+    let h_again: Hash = s.try_into()?;
+    println!("{:?}", h_again.arr);
 
-    let h2 = Hash::from_string("hello!".into());
+    // let h2 = Hash::hash("hello!".into());
+    // println!("{}", &h2.as_hex_string());
 
-    for x1 in h1.arr.iter() {
-        print!("{:4}", x1);
-    }
-    println!("");
+    // let dist = h1.cyclic_distance(h2);
 
-    for x1 in h2.arr.iter() {
-        print!("{:4}", x1);
-    }
-    let dist = h1.cyclic_distance(h2);
-
-    println!("");
-    println!("----------------------------------------------------------------------------");
-    for x1 in dist.arr.iter() {
-        print!("{:4}", x1);
-    }
-    println!("");
-    println!("");
+    // println!("----------------------------------------------------------------------------");
+    // println!("{}", &dist.as_hex_string());
+    // println!("");
+    // println!("");
 
     Ok(())
 }

@@ -4,7 +4,7 @@ use std::ops;
 
 use sha2::{Digest, Sha256};
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, std::hash::Hash)]
 pub struct Arru8<N: ArrayLength<u8> + Eq> {
     //big endian!
     pub arr: GenericArray<u8, N>,
@@ -13,7 +13,7 @@ pub struct Arru8<N: ArrayLength<u8> + Eq> {
 pub type Hash = Arru8<<Sha256 as Digest>::OutputSize>;
 
 impl Hash {
-    pub fn from_string(s: String) -> Self {
+    pub fn hash(s: String) -> Self {
         let mut hasher = Sha256::default();
 
         hasher.update(s);
@@ -21,6 +21,48 @@ impl Hash {
         let result = hasher.finalize();
 
         Hash::new(result)
+    }
+}
+
+impl<N> std::fmt::LowerHex for Arru8<N>
+where
+    N: ArrayLength<u8> + Eq,
+{
+    fn fmt(&self, fmtr: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        for byte in self.arr.iter() {
+            write!(fmtr, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+// impl<N> std::str::FromStr for Arru8<N>
+// where
+//     N: ArrayLength<u8> + Eq,
+// {
+//     type Err = hex::FromHexError;
+
+//     // fn from_str(s: &str) -> Result<Self, Self::Err> {}
+// }
+
+impl<N> TryFrom<String> for Arru8<N>
+where
+    N: ArrayLength<u8> + Eq,
+{
+    type Error = hex::FromHexError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        let hex_vec = hex::decode(s)?;
+        let mut arr: GenericArray<u8, N> = GenericArray::default();
+
+        if hex_vec.len() == N::to_usize() {
+            hex_vec.iter().enumerate().for_each(|(i, x)| {
+                arr[i] = *x;
+            });
+            Ok(Self::new(arr))
+        } else {
+            Err(hex::FromHexError::InvalidStringLength)
+        }
     }
 }
 
@@ -64,6 +106,10 @@ where
         } else {
             d2
         }
+    }
+
+    pub fn as_hex_string(&self) -> String {
+        format!("{:02x}", self)
     }
 }
 
@@ -292,12 +338,22 @@ mod tests {
             h1.cyclic_distance(h2c) == h2.cyclic_distance(h1c)
         }
 
-        fn smallerthanhalf(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
+        fn smaller_than_half(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
             let d = h1.cyclic_distance(h2);
             let mut half_max: [u8; 3]= [0; 3];
             half_max[U3::to_usize() - 1] = 128;
 
             d <= Arru8::<U3> {arr: half_max.into()}
+        }
+
+        fn hex_parse_format(h1: Arru8<U3>) -> bool {
+            let hex_s = h1.as_hex_string();
+            h1 == hex_s.try_into().unwrap()
+        }
+
+        fn hex_parse_format_hash(h1: Hash) -> bool {
+            let hex_s = h1.as_hex_string();
+            h1 == hex_s.try_into().unwrap()
         }
     }
 }

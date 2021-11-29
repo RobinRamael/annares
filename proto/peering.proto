@@ -6,6 +6,7 @@ service PeeringNode {
   rpc ListPeers (ListPeersRequest) returns (ListPeersReply);
 
   rpc getKey (GetKeyRequest) returns (GetKeyReply);
+  rpc store (StoreRequest) returns (StoreReply);
 }
 
 message IntroductionRequest {
@@ -13,13 +14,29 @@ message IntroductionRequest {
 }
 
 message IntroductionReply {
-  repeated string knownPeers = 1;
+  repeated Peer knownPeers = 1;
 }
 
 message ListPeersRequest {}
 
+message Peer {
+  string addr = 1;
+  string hash = 2;
+}
+
 message ListPeersReply {
-  repeated string knownPeers = 1;
+  repeated Peer knownPeers = 1;
+}
+
+
+message StoreRequest {
+  string value = 1;
+  int32 hops = 2;
+}
+
+message StoreReply {
+  string key = 1;
+  string storedIn = 2;
 }
 
 message GetKeyRequest {
