@@ -37,7 +37,7 @@ message HealthCheckReply { }
 
 message StoreRequest {
   string value = 1;
-  int32 hops = 2;
+  uint32 hops = 2;
 }
 
 message StoreReply {

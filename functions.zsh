@@ -5,9 +5,9 @@ function _build() {
 }
 
 function runfirst() {
-    kitty cargo --quiet run --bin node $1 &
+    kitty target/debug/node $1 &
 }
 
 function run() {
-    kitty cargo --quiet run --bin node $1 --peer "[::1]:$2" &
+    kitty target/debug/node $1 --peer "[::1]:$2" &
 }

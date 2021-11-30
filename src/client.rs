@@ -1,7 +1,6 @@
 mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
-use peering::grpc::ListPeersRequest;
-use peering::hash::Hash;
+use peering::grpc::{ListPeersRequest, StoreRequest, StoreReply};
 use peering::node::KnownPeer;
 use peering::utils::build_grpc_url;
 
@@ -87,22 +86,24 @@ struct StoreValueArgs {
     value: String,
 }
 
-async fn store_value(_peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
-    let h1 = Hash::hash(value);
-    println!("{:?}", h1.arr);
-    let s = format!("{:}", h1.as_hex_string());
-    let h_again: Hash = s.try_into()?;
-    println!("{:?}", h_again.arr);
+async fn store_value(peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
 
-    // let h2 = Hash::hash("hello!".into());
-    // println!("{}", &h2.as_hex_string());
+    let target_url = build_grpc_url(&peer);
 
-    // let dist = h1.cyclic_distance(h2);
+    let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
 
-    // println!("----------------------------------------------------------------------------");
-    // println!("{}", &dist.as_hex_string());
-    // println!("");
-    // println!("");
+    let response = client.store(
+        tonic::Request::new(StoreRequest {
+            value,
+            hops: 0
+        })
+    ).await.unwrap();
+
+    let StoreReply { stored_in, key} = response.get_ref();
+
+    println!("Stored in {}", stored_in);
+    println!("at {}", key);
+
 
     Ok(())
 }

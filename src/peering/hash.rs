@@ -13,7 +13,7 @@ pub struct Arru8<N: ArrayLength<u8> + Eq> {
 pub type Hash = Arru8<<Sha256 as Digest>::OutputSize>;
 
 impl Hash {
-    pub fn hash(s: String) -> Self {
+    pub fn hash(s: &String) -> Self {
         let mut hasher = Sha256::default();
 
         hasher.update(s);
@@ -87,10 +87,10 @@ where
         }
     }
 
-    pub fn cyclic_distance(self, rhs: Self) -> Self {
+    pub fn cyclic_distance(&self, rhs: &Self) -> Self {
         let lhs = self.clone(); // there has to be a better way...
-        let d1 = self.cyclic_sub(rhs.clone());
-        let d2 = rhs.cyclic_sub(lhs);
+        let d1 = self.clone().cyclic_sub(rhs.clone());
+        let d2 = rhs.clone().cyclic_sub(lhs);
 
         if d1 <= d2 {
             d1
@@ -109,16 +109,24 @@ where
     N: ArrayLength<u8> + Eq,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        for (n1, n2) in self.arr.iter().zip(other.arr.iter()).rev() {
-            if n1 != n2 {
-                return Some(n1.cmp(n2));
-            }
-        }
-
-        Some(cmp::Ordering::Equal)
+        Some(self.cmp(other))
     }
 }
 
+impl<N> cmp::Ord for Arru8<N>
+where
+    N: ArrayLength<u8> + Eq,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (n1, n2) in self.arr.iter().zip(other.arr.iter()).rev() {
+            if n1 != n2 {
+                return n1.cmp(n2);
+            }
+        }
+
+        cmp::Ordering::Equal
+    }
+}
 impl<N> ops::Sub for Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
@@ -251,7 +259,7 @@ mod tests {
         let n2 = Arru8::new(arr![u8;  134]);
         let d = Arru8::new(arr![u8; 86]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     #[test]
@@ -261,7 +269,7 @@ mod tests {
 
         let d = Arru8::new(arr![u8; 1]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     #[test]
@@ -271,7 +279,7 @@ mod tests {
 
         let d = Arru8::new(arr![u8; 1, 0, 0, 0, 0, 0, 0]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     #[test]
@@ -281,7 +289,7 @@ mod tests {
 
         let d = Arru8::new(arr![u8; 50, 223, 255, 254, 106]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     #[test]
@@ -291,7 +299,7 @@ mod tests {
 
         let d = Arru8::new(arr![u8; 0, 0, 0]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     #[test]
@@ -301,7 +309,7 @@ mod tests {
 
         let d = Arru8::new(arr![u8; 192, 27]);
 
-        assert_eq!(n1.cyclic_distance(n2), d);
+        assert_eq!(n1.cyclic_distance(&n2), d);
     }
 
     extern crate quickcheck;
@@ -326,11 +334,11 @@ mod tests {
         fn symmetric(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
             let h1c = h1.clone();
             let h2c = h2.clone();
-            h1.cyclic_distance(h2c) == h2.cyclic_distance(h1c)
+            h1.cyclic_distance(&h2c) == h2.cyclic_distance(&h1c)
         }
 
         fn smaller_than_half(h1: Arru8<U3>, h2: Arru8<U3>) -> bool {
-            let d = h1.cyclic_distance(h2);
+            let d = h1.cyclic_distance(&h2);
             let mut half_max: [u8; 3]= [0; 3];
             half_max[U3::to_usize() - 1] = 128;
 

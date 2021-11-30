@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::peering::grpc;
 use crate::peering::grpc::peering_node_client::PeeringNodeClient;
 use crate::peering::grpc::peering_node_server::PeeringNode;
@@ -44,7 +46,7 @@ impl NodeData {
 
         NodeData {
             addr,
-            hash: Hash::hash(addr.to_string()),
+            hash: Hash::hash(&addr.to_string()),
             known_peers: Arc::new(RwLock::new(peer_map)),
             data_shard: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -115,10 +117,26 @@ impl NodeData {
 
         peers
             .unwrap()
-            .clone()
-            .into_iter()
-            .map(|(_, p)| p)
+            .values()
+            .cloned()
             .max_by_key(|p| Instant::now() - p.last_contact)
+    }
+
+    fn get_nearest(&self, hash: &Hash) -> Option<KnownPeer> {
+        let peers = self.known_peers.read();
+
+        // could it not be that in ridiculously rare cases the distance to two peers is exactly the
+        // same?
+        peers
+            .unwrap()
+            .values()
+            .cloned()
+            .min_by_key(|peer| peer.hash.cyclic_distance(hash))
+    }
+
+    fn store_here(&self, hash: &Hash, value: String) {
+        let mut data_shard = self.data_shard.write().unwrap();
+        data_shard.insert(hash.clone(), value);
     }
 }
 
@@ -128,7 +146,6 @@ impl MyPeeringNode {
     }
 
     pub async fn mingle(&self) -> Result<(), tonic::transport::Error> {
-        // let data = self.data.to_owned();
         let mut locked_peers = self.data.known_peers.write().unwrap();
 
         let mut all_new_peers = Vec::new();
@@ -174,6 +191,37 @@ impl MyPeeringNode {
             .collect();
 
         Ok(new_peers)
+    }
+
+    async fn delegate_store(
+        &self,
+        peer: &KnownPeer,
+        value: String,
+        hops: u32,
+    ) -> Result<(SocketAddr, String), Status> {
+        let target_url = utils::build_grpc_url(&peer.addr);
+
+        println!("delegating store to {}", &peer.addr);
+
+        if let Ok(client) = PeeringNodeClient::connect(target_url).await.as_mut() {
+            let request = Request::new(StoreRequest {
+                value,
+                hops: hops + 1,
+            });
+
+            match client.store(request).await {
+                Ok(response) => {
+                    let StoreReply { key, stored_in, .. } = response.into_inner();
+                    Ok((stored_in.parse().unwrap(), key))
+                }
+                Err(err) => Err(err),
+            }
+        } else {
+            return Err(Status::new(
+                tonic::Code::Internal,
+                "Failed to connect to delegated node",
+            ));
+        }
     }
 }
 
@@ -231,8 +279,40 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(HealthCheckReply {}))
     }
 
-    async fn store(&self, _request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
-        todo!()
+    async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
+        let StoreRequest { value, hops, .. } = request.into_inner();
+
+        println!("received store request for {}", &value);
+
+        let hash = Hash::hash(&value);
+
+        if let Some(nearest_peer) = self.data.get_nearest(&hash) {
+            let my_distance = self.data.hash.cyclic_distance(&hash);
+
+            if my_distance <= nearest_peer.hash.cyclic_distance(&hash) {
+                println!("I'm nearest!");
+                self.data.store_here(&hash, value);
+                Ok(Response::new(StoreReply {
+                    key: hash.as_hex_string(),
+                    stored_in: self.data.addr.to_string(),
+                }))
+            } else {
+                match self.delegate_store(&nearest_peer, value, hops).await {
+                    Ok((addr, key)) => {Ok(Response::new(StoreReply { key, stored_in: addr.to_string() }))},
+                    Err(err) => Err(Status::new(
+                        tonic::Code::Internal,
+                        format!("Failed to delegate store: {}", err),
+                    )),
+                }
+            }
+        } else {
+            println!("I'm all alone!");
+            self.data.store_here(&hash, value);
+            Ok(Response::new(StoreReply {
+                key: hash.as_hex_string(),
+                stored_in: self.data.addr.to_string(),
+            }))
+        }
     }
 }
 
@@ -240,7 +320,7 @@ impl KnownPeer {
     pub fn new(addr: SocketAddr) -> Self {
         KnownPeer {
             addr,
-            hash: Hash::hash(addr.to_string()),
+            hash: Hash::hash(&addr.to_string()),
             last_contact: Instant::now(),
             contacts: 0,
         }
