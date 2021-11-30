@@ -9,12 +9,12 @@ use crate::peering::hash::Hash;
 use crate::peering::utils;
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
+use std::fmt::{Display, Debug};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tonic::{Request, Response, Status};
 
-#[derive(Debug, PartialEq, Eq, std::hash::Hash, Clone)]
+#[derive(PartialEq, Eq, std::hash::Hash, Clone)]
 pub struct KnownPeer {
     pub addr: SocketAddr,
     pub hash: Hash,
@@ -56,9 +56,12 @@ impl PeeringNode for MyPeeringNode {
         &self,
         _: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
-        let locked_peers = self.known_peers.lock().unwrap();
+        let mut peers = self.known_peers.lock().unwrap().clone();
 
-        let ps = locked_peers.iter().map(|p| p.clone().into()).collect();
+        // include this node as well
+        peers.insert(KnownPeer::new(self.addr));
+
+        let ps = peers.iter().map(|p| p.clone().into()).collect();
 
         Ok(Response::new(ListPeersReply { known_peers: ps }))
     }
@@ -139,7 +142,6 @@ impl MyPeeringNode {
         let mut all_new_peers: HashSet<KnownPeer> = HashSet::new();
 
         for known_peer in locked_peers.iter() {
-            println!("Sending introduction to {:?}", known_peer);
 
             let new_peers = self.send_introduction(&known_peer.addr).await?;
 
@@ -151,7 +153,6 @@ impl MyPeeringNode {
 
             all_new_peers.extend(new_peers.clone());
 
-            println!("received peers {:?}", &new_peers);
         }
         locked_peers.extend(all_new_peers);
 
@@ -181,6 +182,13 @@ impl MyPeeringNode {
             .collect();
 
         Ok(new_peers)
+    }
+}
+
+
+impl Debug for KnownPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("KnownPeer").field("addr", &self.addr).finish()
     }
 }
 

@@ -47,13 +47,21 @@ async fn list_peers(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>>
 
     let response = client.list_peers(request).await.unwrap();
 
-    for peer in response
+    let peers: Vec<KnownPeer> = response
         .get_ref()
         .known_peers
         .iter()
         .filter_map(|p| KnownPeer::try_from(p.clone()).ok())
-    {
-        println!("{:?}", peer);
+        .collect();
+
+    let mut leading_hashes: Vec<Vec<KnownPeer>> = vec![vec![]; 255];
+
+    peers.into_iter().map(|peer| (peer.hash.arr[31], peer)).for_each(|(ph, peer)| {
+        leading_hashes.get_mut(ph as usize).unwrap().push(peer);
+    });
+
+    for (i, peers) in leading_hashes.into_iter().enumerate() {
+        println!("{:02x}: {:?}", i, peers);
     }
 
     Ok(())

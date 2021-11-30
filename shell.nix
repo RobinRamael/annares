@@ -11,6 +11,7 @@ in pkgs.mkShell {
     pkgs.rustfmt
     pkgs.rustup
     pkgs.rust-analyzer
+    pkgs.clippy
 
     # Necessary for the openssl-sys crate:
     pkgs.openssl
