@@ -19,6 +19,7 @@ structopt = "0.3.25"
 sha2 = "0.9.8"
 generic-array = "0.14.4"
 hex = "0.4.3"
+futures = "0.3.18"
 
 [build-dependencies]
 tonic-build = "0.6"

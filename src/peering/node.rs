@@ -2,21 +2,19 @@ use crate::peering::grpc;
 use crate::peering::grpc::peering_node_client::PeeringNodeClient;
 use crate::peering::grpc::peering_node_server::PeeringNode;
 use crate::peering::grpc::{
-    GetKeyReply, GetKeyRequest, IntroductionReply, IntroductionRequest, ListPeersReply,
-    ListPeersRequest, StoreReply, StoreRequest,
+    GetKeyReply, GetKeyRequest, HealthCheckReply, HealthCheckRequest, IntroductionReply,
+    IntroductionRequest, ListPeersReply, ListPeersRequest, StoreReply, StoreRequest,
 };
 use crate::peering::hash::Hash;
 use crate::peering::utils;
+use futures::TryFuture;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
-
-use tokio::time::Interval;
-use tokio::task;
 
 #[derive(Debug)]
 pub struct MyPeeringNode {
@@ -36,8 +34,8 @@ pub struct KnownPeer {
     pub addr: SocketAddr,
     pub hash: Hash,
     pub last_contact: Instant,
+    pub contacts: u64,
 }
-
 
 impl NodeData {
     pub fn new(port: u16, known_peers: HashSet<KnownPeer>) -> NodeData {
@@ -49,13 +47,77 @@ impl NodeData {
             data_shard: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    fn purge(&self, peer: &KnownPeer) {
+        println!("Purging {}", peer);
+        let mut peers = self.known_peers.write().unwrap();
+        assert!(peers.contains(peer));
+        peers.remove(peer);
+    }
+
+    pub async fn peer_check_loop(
+        self: &Arc<Self>,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let data = self.clone();
+        {
+            dbg!(&data.known_peers.read().unwrap());
+        }
+
+        let forever = tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+
+            loop {
+                interval.tick().await;
+
+                if let Some(peer) = data.stalest_peer().as_mut() {
+                    print!("Checking health of {}... ", &peer);
+
+                    match PeeringNodeClient::connect(utils::build_grpc_url(&peer.addr))
+                        .await
+                        .as_mut()
+                    {
+                        Ok(client) => {
+                            match client
+                                .check_health(Request::new(HealthCheckRequest {}))
+                                .await
+                            {
+                                Ok(_) => {
+                                    println!("Healthy!");
+                                }
+                                Err(err) => {
+                                    println!("Request failed: {}", err);
+                                    data.purge(peer);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            println!("Connection failed: {}", err);
+                            data.purge(peer);
+                        }
+                    };
+                }
+            }
+        });
+        forever
+    }
+
+    fn stalest_peer(&self) -> Option<KnownPeer> {
+
+        let peers = self.known_peers.read();
+
+        dbg!(&peers);
+        peers
+            .unwrap()
+            .clone()
+            .into_iter()
+            .max_by_key(|p| Instant::now() - p.last_contact)
+    }
 }
 
 impl MyPeeringNode {
     pub fn new(data: Arc<NodeData>) -> MyPeeringNode {
-        MyPeeringNode {
-            data
-        }
+        MyPeeringNode { data }
     }
 
     pub async fn mingle(&self) -> Result<(), tonic::transport::Error> {
@@ -91,7 +153,7 @@ impl MyPeeringNode {
 
         let mut client = PeeringNodeClient::connect(target_url).await?;
 
-        let request = tonic::Request::new(IntroductionRequest {
+        let request = Request::new(IntroductionRequest {
             sender_adress: self.data.addr.to_string(),
         });
 
@@ -105,29 +167,6 @@ impl MyPeeringNode {
             .collect();
 
         Ok(new_peers)
-    }
-
-    pub async fn initialize_peer_check(&self, interval: Duration) -> task::JoinHandle<()> {
-        let forever = tokio::task::spawn(async move {
-            println!("in task");
-            let mut interval = tokio::time::interval(interval);
-
-            loop {
-                interval.tick().await;
-                println!("tick");
-            }
-        });
-
-        forever
-    }
-
-    fn oldest_contact(&self) -> Option<KnownPeer> {
-        self.data.known_peers
-            .read()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .max_by_key(|p| p.last_contact)
     }
 }
 
@@ -176,6 +215,13 @@ impl PeeringNode for MyPeeringNode {
         unimplemented!();
     }
 
+    async fn check_health(
+        &self,
+        _: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckReply>, Status> {
+        Ok(Response::new(HealthCheckReply {}))
+    }
+
     async fn store(&self, _request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
         todo!()
     }
@@ -187,6 +233,7 @@ impl KnownPeer {
             addr,
             hash: Hash::hash(addr.to_string()),
             last_contact: Instant::now(),
+            contacts: 0,
         }
     }
 }
@@ -220,6 +267,7 @@ impl Debug for KnownPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("KnownPeer")
             .field("addr", &self.addr)
+            .field("contacts", &self.contacts)
             .finish()
     }
 }

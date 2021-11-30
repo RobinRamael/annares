@@ -7,6 +7,8 @@ service PeeringNode {
 
   rpc getKey (GetKeyRequest) returns (GetKeyReply);
   rpc store (StoreRequest) returns (StoreReply);
+
+  rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
 }
 
 message IntroductionRequest {
@@ -27,6 +29,10 @@ message Peer {
 message ListPeersReply {
   repeated Peer knownPeers = 1;
 }
+
+message HealthCheckRequest { }
+
+message HealthCheckReply { }
 
 
 message StoreRequest {
