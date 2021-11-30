@@ -28,9 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::from_args();
 
     let peers = if args.bootstrap_peer.is_some() {
-        HashSet::from_iter(vec![KnownPeer::new(args.bootstrap_peer.unwrap())])
+        vec![KnownPeer::new(args.bootstrap_peer.unwrap())]
     } else {
-        HashSet::new()
+        vec![]
     };
 
     println!("Running on port {:?}", args.port);

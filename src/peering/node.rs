@@ -7,9 +7,9 @@ use crate::peering::grpc::{
 };
 use crate::peering::hash::Hash;
 use crate::peering::utils;
-use futures::TryFuture;
+use std::iter;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -25,7 +25,7 @@ pub struct MyPeeringNode {
 pub struct NodeData {
     pub addr: SocketAddr,
     pub hash: Hash,
-    pub known_peers: Arc<RwLock<HashSet<KnownPeer>>>,
+    pub known_peers: Arc<RwLock<HashMap<SocketAddr, KnownPeer>>>,
     pub data_shard: Arc<RwLock<HashMap<Hash, String>>>,
 }
 
@@ -38,12 +38,14 @@ pub struct KnownPeer {
 }
 
 impl NodeData {
-    pub fn new(port: u16, known_peers: HashSet<KnownPeer>) -> NodeData {
+    pub fn new(port: u16, known_peers: Vec<KnownPeer>) -> NodeData {
         let addr = utils::ipv6_loopback_socketaddr(port);
+        let peer_map = HashMap::from_iter(known_peers.into_iter().map(|p| (p.addr, p)));
+
         NodeData {
             addr,
             hash: Hash::hash(addr.to_string()),
-            known_peers: Arc::new(RwLock::new(known_peers)),
+            known_peers: Arc::new(RwLock::new(peer_map)),
             data_shard: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -51,18 +53,23 @@ impl NodeData {
     fn purge(&self, peer: &KnownPeer) {
         println!("Purging {}", peer);
         let mut peers = self.known_peers.write().unwrap();
-        assert!(peers.contains(peer));
-        peers.remove(peer);
+        assert!(peers.contains_key(&peer.addr));
+        peers.remove(&peer.addr);
+    }
+
+    fn mark_healthy(&self, peer: &KnownPeer) {
+        let mut locked_peers = self.known_peers.write().unwrap();
+        let healthy_peer = locked_peers.get_mut(&peer.addr).unwrap();
+
+        healthy_peer.last_contact = Instant::now();
+        healthy_peer.contacts += 1;
     }
 
     pub async fn peer_check_loop(
         self: &Arc<Self>,
         interval: Duration,
     ) -> tokio::task::JoinHandle<()> {
-        let data = self.clone();
-        {
-            dbg!(&data.known_peers.read().unwrap());
-        }
+        let data = Arc::clone(self);
 
         let forever = tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(interval);
@@ -70,7 +77,7 @@ impl NodeData {
             loop {
                 interval.tick().await;
 
-                if let Some(peer) = data.stalest_peer().as_mut() {
+                if let Some(peer) = data.stalest_peer() {
                     print!("Checking health of {}... ", &peer);
 
                     match PeeringNodeClient::connect(utils::build_grpc_url(&peer.addr))
@@ -84,16 +91,17 @@ impl NodeData {
                             {
                                 Ok(_) => {
                                     println!("Healthy!");
+                                    data.mark_healthy(&peer);
                                 }
                                 Err(err) => {
                                     println!("Request failed: {}", err);
-                                    data.purge(peer);
+                                    data.purge(&peer);
                                 }
                             }
                         }
                         Err(err) => {
                             println!("Connection failed: {}", err);
-                            data.purge(peer);
+                            data.purge(&peer);
                         }
                     };
                 }
@@ -103,14 +111,13 @@ impl NodeData {
     }
 
     fn stalest_peer(&self) -> Option<KnownPeer> {
-
         let peers = self.known_peers.read();
 
-        dbg!(&peers);
         peers
             .unwrap()
             .clone()
             .into_iter()
+            .map(|(_, p)| p)
             .max_by_key(|p| Instant::now() - p.last_contact)
     }
 }
@@ -124,12 +131,10 @@ impl MyPeeringNode {
         // let data = self.data.to_owned();
         let mut locked_peers = self.data.known_peers.write().unwrap();
 
-        let mut all_new_peers: HashSet<KnownPeer> = HashSet::new();
+        let mut all_new_peers = Vec::new();
 
-        for known_peer in locked_peers.iter() {
+        for known_peer in locked_peers.values() {
             let new_peers = self.send_introduction(&known_peer.addr).await?;
-
-            print_peers(&new_peers);
 
             for new_peer in new_peers.iter().filter(|p| p.addr != self.data.addr) {
                 self.send_introduction(&new_peer.addr).await?;
@@ -138,7 +143,9 @@ impl MyPeeringNode {
             all_new_peers.extend(new_peers.clone());
         }
 
-        locked_peers.extend(all_new_peers);
+        for p in all_new_peers {
+            locked_peers.insert(p.addr, p);
+        }
 
         Ok(())
     }
@@ -146,7 +153,7 @@ impl MyPeeringNode {
     async fn send_introduction(
         &self,
         target_addr: &SocketAddr,
-    ) -> Result<HashSet<KnownPeer>, tonic::transport::Error> {
+    ) -> Result<Vec<KnownPeer>, tonic::transport::Error> {
         let target_url = utils::build_grpc_url(target_addr);
 
         println!("sending intro to {}", target_addr);
@@ -176,18 +183,18 @@ impl PeeringNode for MyPeeringNode {
         &self,
         request: Request<IntroductionRequest>,
     ) -> Result<Response<IntroductionReply>, Status> {
-        let new_peer_addr = request.into_inner().sender_adress;
+        let new_peer_addr = request.into_inner().sender_adress.parse().unwrap();
 
         println!("received introduction from {:?}", new_peer_addr);
 
         let mut locked_peers = self.data.known_peers.write().unwrap();
 
         let known_peers = locked_peers
-            .iter()
+            .values()
             .map(|p| grpc::Peer::from(p.clone()))
             .collect();
 
-        locked_peers.insert(KnownPeer::new(new_peer_addr.parse().unwrap()));
+        locked_peers.insert(new_peer_addr, KnownPeer::new(new_peer_addr));
 
         print_peers(&locked_peers);
 
@@ -198,14 +205,16 @@ impl PeeringNode for MyPeeringNode {
         &self,
         _: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
-        let mut peers = self.data.known_peers.read().unwrap().clone();
+        let locked_peers = self.data.known_peers.read().unwrap().clone();
 
-        // include this node as well
-        peers.insert(KnownPeer::new(self.data.addr));
+        let peers: Vec<_> = locked_peers
+            .into_iter()
+            .map(|(_, p)| p)
+            .chain(iter::once(KnownPeer::new(self.data.addr))) // also include our own address
+            .map(|p| p.clone().into())
+            .collect();
 
-        let ps = peers.iter().map(|p| p.clone().into()).collect();
-
-        Ok(Response::new(ListPeersReply { known_peers: ps }))
+        Ok(Response::new(ListPeersReply { known_peers: peers }))
     }
 
     async fn get_key(
@@ -272,12 +281,12 @@ impl Debug for KnownPeer {
     }
 }
 
-pub fn print_peers(peers: &HashSet<KnownPeer>) {
+pub fn print_peers(peers: &HashMap<SocketAddr, KnownPeer>) {
     if peers.is_empty() {
         println!("Known peers: None")
     } else {
         println!("KNOWN PEERS: ");
-        for p in peers {
+        for p in peers.values() {
             println!("   - {}", p);
         }
     }
