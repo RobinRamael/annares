@@ -79,15 +79,21 @@ async fn get_key(peer: &SocketAddr, key: String) -> Result<(), Box<dyn std::erro
 
     let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
 
-    let response = client.get_key(
+    match client.get_key(
         tonic::Request::new(GetKeyRequest {
             key
         })
-    ).await.unwrap();
+    ).await {
+        Ok(response) => {
+            let GetKeyReply {value} = response.get_ref();
 
-    let GetKeyReply {value} = response.get_ref();
+            println!("Value: {}", value);
+        },
+        Err(err) => {
+            println!("Error occured: {}", err.message());
+        }
+    }
 
-    println!("Value: {}", value);
 
     Ok(())
 }

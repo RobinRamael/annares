@@ -22,6 +22,8 @@ use tonic::{Request, Response, Status};
 trait GetStore {
     async fn get_key(&self, key: &Hash) -> Result<String, Status>;
     async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status>;
+
+    fn distance_to(&self, key: &Hash) -> Hash;
 }
 
 #[derive(Debug)]
@@ -123,18 +125,6 @@ impl NodeData {
             .max_by_key(|p| Instant::now() - p.last_contact)
     }
 
-    fn get_nearest(&self, hash: &Hash) -> Option<KnownPeer> {
-        let peers = self.known_peers.read();
-
-        // could it not be that in ridiculously rare cases the distance to two peers is exactly the
-        // same?
-        peers
-            .unwrap()
-            .values()
-            .cloned()
-            .min_by_key(|peer| peer.hash.cyclic_distance(hash))
-    }
-
     fn store_here(&self, key: &Hash, value: String) {
         let mut data_shard = self.data_shard.write().unwrap();
         data_shard.insert(key.clone(), value);
@@ -147,10 +137,9 @@ impl NodeData {
     }
 }
 
-
 #[tonic::async_trait]
 impl GetStore for NodeData {
-   async fn get_key(&self, key: &Hash) -> Result<String, Status> {
+    async fn get_key(&self, key: &Hash) -> Result<String, Status> {
         let data_shard = self.data_shard.read().unwrap();
 
         match data_shard.get(key).cloned() {
@@ -162,10 +151,14 @@ impl GetStore for NodeData {
         }
     }
 
-   async fn store(&self, key: &Hash, value: String, _hops: u32) -> Result<SocketAddr, Status> {
+    async fn store(&self, key: &Hash, value: String, _hops: u32) -> Result<SocketAddr, Status> {
         let mut data_shard = self.data_shard.write().unwrap();
         data_shard.insert(key.clone(), value);
         Ok(self.addr)
+    }
+
+    fn distance_to(&self, key: &Hash) -> Hash {
+        self.hash.cyclic_distance(key)
     }
 }
 
@@ -184,10 +177,10 @@ impl KnownPeer {
 
         match PeeringNodeClient::connect(target_url).await {
             Ok(client) => Ok(client),
-            Err(_) =>  Err(Status::new(
+            Err(_) => Err(Status::new(
                 tonic::Code::Internal,
                 "Failed to connect to delegated node",
-            ))
+            )),
         }
     }
 }
@@ -197,7 +190,9 @@ impl GetStore for KnownPeer {
         println!("delegating get to {}", &self.addr);
 
         let mut client = self.connect().await?;
-        let request = Request::new(GetKeyRequest { key: key.as_hex_string() });
+        let request = Request::new(GetKeyRequest {
+            key: key.as_hex_string(),
+        });
 
         match client.get_key(request).await {
             Ok(response) => {
@@ -208,7 +203,7 @@ impl GetStore for KnownPeer {
         }
     }
 
-    async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
+    async fn store(&self, _key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
         println!("delegating store to {}", &self.addr);
         let mut client = self.connect().await?;
 
@@ -219,11 +214,15 @@ impl GetStore for KnownPeer {
 
         match client.store(request).await {
             Ok(response) => {
-                let StoreReply { key, stored_in, .. } = response.into_inner();
+                let StoreReply {stored_in, .. } = response.into_inner();
                 Ok(stored_in.parse().unwrap())
             }
             Err(err) => Err(err),
         }
+    }
+
+    fn distance_to(&self, key: &Hash) -> Hash {
+        self.hash.cyclic_distance(key)
     }
 }
 
@@ -333,6 +332,21 @@ impl MyPeeringNode {
             ));
         }
     }
+
+    fn get_nearest(&self, hash: &Hash) -> Arc<dyn GetStore + Send + Sync> {
+        let this_node = self.data.clone();
+        let peers = self.data.known_peers.read();
+
+        peers
+            .unwrap()
+            .values()
+            .cloned()
+            .map(|p| Arc::new(p) as Arc<dyn GetStore + Send + Sync>)
+            .chain(iter::once(this_node as Arc<dyn GetStore + Send + Sync>))
+            .min_by_key(|peer| peer.distance_to(hash))
+            .unwrap() // we can unwrap here because we're sure the iterator has at least self in it
+    }
+
 }
 
 #[tonic::async_trait]
@@ -375,6 +389,7 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(ListPeersReply { known_peers: peers }))
     }
 
+
     async fn get_key(
         &self,
         request: Request<GetKeyRequest>,
@@ -383,38 +398,9 @@ impl PeeringNode for MyPeeringNode {
 
         let hash: Hash = Hash::try_from(key).unwrap();
 
-        if let Some(nearest_peer) = self.data.get_nearest(&hash) {
-            let my_distance = self.data.hash.cyclic_distance(&hash);
+        let value = self.get_nearest(&hash).get_key(&hash).await?;
 
-            if my_distance <= nearest_peer.hash.cyclic_distance(&hash) {
-                println!("I'm nearest!");
-                match self.data.get_here(&hash) {
-                    Some(value) => Ok(Response::new(GetKeyReply {
-                        value: value.clone(),
-                    })),
-                    None => Err(Status::new(tonic::Code::NotFound, "Not found")),
-                }
-            } else {
-                match self
-                    .delegate_get(&nearest_peer, &hash.as_hex_string())
-                    .await
-                {
-                    Ok(value) => Ok(Response::new(GetKeyReply { value })),
-                    Err(err) => Err(Status::new(
-                        tonic::Code::Internal,
-                        format!("Failed to delegate get: {}", err),
-                    )),
-                }
-            }
-        } else {
-            println!("I'm all alone!");
-            match self.data.get_here(&hash) {
-                Some(value) => Ok(Response::new(GetKeyReply {
-                    value: value.clone(),
-                })),
-                None => Err(Status::new(tonic::Code::NotFound, "Not found")),
-            }
-        }
+        Ok(Response::new(GetKeyReply { value }))
     }
 
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
@@ -424,36 +410,15 @@ impl PeeringNode for MyPeeringNode {
 
         let hash = Hash::hash(&value);
 
-        if let Some(nearest_peer) = self.data.get_nearest(&hash) {
-            let my_distance = self.data.hash.cyclic_distance(&hash);
+        let addr = self
+            .get_nearest(&hash)
+            .store(&hash, value, hops)
+            .await?;
 
-            if my_distance <= nearest_peer.hash.cyclic_distance(&hash) {
-                println!("I'm nearest!");
-                self.data.store_here(&hash, value);
-                Ok(Response::new(StoreReply {
-                    key: hash.as_hex_string(),
-                    stored_in: self.data.addr.to_string(),
-                }))
-            } else {
-                match self.delegate_store(&nearest_peer, value, hops).await {
-                    Ok((addr, key)) => Ok(Response::new(StoreReply {
-                        key,
-                        stored_in: addr.to_string(),
-                    })),
-                    Err(err) => Err(Status::new(
-                        tonic::Code::Internal,
-                        format!("Failed to delegate store: {}", err),
-                    )),
-                }
-            }
-        } else {
-            println!("I'm all alone!");
-            self.data.store_here(&hash, value);
-            Ok(Response::new(StoreReply {
-                key: hash.as_hex_string(),
-                stored_in: self.data.addr.to_string(),
-            }))
-        }
+        Ok(Response::new(StoreReply {
+            key: hash.as_hex_string(),
+            stored_in: addr.to_string(),
+        }))
     }
 
     async fn check_health(
@@ -463,7 +428,6 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(HealthCheckReply {}))
     }
 }
-
 
 impl Display for KnownPeer {
     fn fmt(&self, fmtr: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
