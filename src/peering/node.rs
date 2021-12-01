@@ -4,9 +4,9 @@ use crate::peering::grpc;
 use crate::peering::grpc::peering_node_client::PeeringNodeClient;
 use crate::peering::grpc::peering_node_server::PeeringNode;
 use crate::peering::grpc::{
-    GetKeyReply, GetKeyRequest, HealthCheckReply, HealthCheckRequest, IntroductionReply,
-    IntroductionRequest, KeyValuePair, ListPeersReply, ListPeersRequest, StoreReply, StoreRequest,
-    TransferReply, TransferRequest,
+    GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, HealthCheckReply,
+    HealthCheckRequest, IntroductionReply, IntroductionRequest, KeyValuePair, ListPeersReply,
+    ListPeersRequest, StoreReply, StoreRequest, TransferReply, TransferRequest,
 };
 use crate::peering::hash::Hash;
 use crate::peering::utils;
@@ -395,22 +395,6 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(IntroductionReply { known_peers }))
     }
 
-    async fn list_peers(
-        &self,
-        _: Request<ListPeersRequest>,
-    ) -> Result<Response<ListPeersReply>, Status> {
-        let locked_peers = self.data.known_peers.read().unwrap().clone();
-
-        let peers: Vec<_> = locked_peers
-            .values()
-            .cloned()
-            .chain(iter::once(KnownPeer::new(self.data.addr)))
-            .map(grpc::Peer::from)
-            .collect();
-
-        Ok(Response::new(ListPeersReply { known_peers: peers }))
-    }
-
     async fn get_key(
         &self,
         request: Request<GetKeyRequest>,
@@ -472,6 +456,40 @@ impl PeeringNode for MyPeeringNode {
         }
 
         Ok(Response::new(TransferReply { transferred_keys }))
+    }
+
+    async fn list_peers(
+        &self,
+        _: Request<ListPeersRequest>,
+    ) -> Result<Response<ListPeersReply>, Status> {
+        let locked_peers = self.data.known_peers.read().unwrap().clone();
+
+        let peers: Vec<_> = locked_peers
+            .values()
+            .cloned()
+            .chain(iter::once(KnownPeer::new(self.data.addr)))
+            .map(grpc::Peer::from)
+            .collect();
+
+        Ok(Response::new(ListPeersReply { known_peers: peers }))
+    }
+
+    async fn get_data_shard(
+        &self,
+        _: Request<GetDataShardRequest>,
+    ) -> Result<Response<GetDataShardReply>, Status> {
+        let shard = self.data.data_shard.read().unwrap();
+
+        Ok(Response::new(GetDataShardReply {
+            shard: shard
+                .clone()
+                .into_iter()
+                .map(|(key, value)| KeyValuePair {
+                    key: key.as_hex_string(),
+                    value,
+                })
+                .collect(),
+        }))
     }
 }
 

@@ -10,6 +10,8 @@ service PeeringNode {
   rpc transfer (TransferRequest) returns (TransferReply);
 
   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
+  rpc getDataShard (GetDataShardRequest) returns (GetDataShardReply);
+
 }
 
 message IntroductionRequest {
@@ -67,4 +69,11 @@ message TransferReply {
   repeated string transferredKeys = 1;
 }
 
+
+message GetDataShardRequest {
+}
+
+message GetDataShardReply {
+  repeated KeyValuePair shard = 1;
+}
 

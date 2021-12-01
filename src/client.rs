@@ -1,6 +1,9 @@
 mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
-use peering::grpc::{GetKeyReply, GetKeyRequest, ListPeersRequest, StoreReply, StoreRequest};
+use peering::grpc::{
+    GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, KeyValuePair,
+    ListPeersRequest, StoreReply, StoreRequest,
+};
 use peering::node::KnownPeer;
 use peering::utils::build_grpc_url;
 
@@ -25,6 +28,9 @@ enum Cli {
 
     #[structopt(name = "get")]
     GetKey(GetKeyArgs),
+
+    #[structopt(name = "get-all")]
+    GetAll(BaseCli),
 }
 
 fn parse_peer_flag(addr_s: &str) -> Result<SocketAddr, AddrParseError> {
@@ -70,6 +76,12 @@ async fn list_peers(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[derive(StructOpt, Debug)]
+struct GetArgs {
+    #[structopt(flatten)]
+    base: BaseCli,
+}
+
+#[derive(StructOpt, Debug)]
 struct GetKeyArgs {
     #[structopt(flatten)]
     base: BaseCli,
@@ -94,6 +106,24 @@ async fn get_key(peer: &SocketAddr, key: String) -> Result<(), Box<dyn std::erro
         Err(err) => {
             println!("Error occured: {}", err.message());
         }
+    }
+
+    Ok(())
+}
+
+async fn get_all(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    let target_url = build_grpc_url(&peer);
+
+    let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
+
+    let response = client
+        .get_data_shard(tonic::Request::new(GetDataShardRequest {}))
+        .await?;
+
+    let GetDataShardReply { shard } = response.get_ref();
+
+    for KeyValuePair { key: _, value } in shard {
+        println!("- {}", value);
     }
 
     Ok(())
@@ -136,6 +166,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cli::GetKey(cfg) => {
             get_key(&cfg.base.peer, cfg.key).await?;
+        }
+        Cli::GetKey(cfg) => {
+            get_key(&cfg.base.peer, cfg.key).await?;
+        }
+        Cli::GetAll(cfg) => {
+            get_all(&cfg.peer).await?;
         }
     }
     Ok(())
