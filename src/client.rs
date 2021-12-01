@@ -1,6 +1,6 @@
 mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
-use peering::grpc::{ListPeersRequest, StoreRequest, StoreReply, GetKeyRequest, GetKeyReply};
+use peering::grpc::{GetKeyReply, GetKeyRequest, ListPeersRequest, StoreReply, StoreRequest};
 use peering::node::KnownPeer;
 use peering::utils::build_grpc_url;
 
@@ -55,9 +55,12 @@ async fn list_peers(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Error>>
 
     let mut leading_hashes: Vec<Vec<KnownPeer>> = vec![vec![]; 255];
 
-    peers.into_iter().map(|peer| (peer.hash.arr[31], peer)).for_each(|(ph, peer)| {
-        leading_hashes.get_mut(ph as usize).unwrap().push(peer);
-    });
+    peers
+        .into_iter()
+        .map(|peer| (peer.hash.arr[31], peer))
+        .for_each(|(ph, peer)| {
+            leading_hashes.get_mut(ph as usize).unwrap().push(peer);
+        });
 
     for (i, peers) in leading_hashes.into_iter().enumerate() {
         println!("{:02x}: {:?}", i, peers);
@@ -79,21 +82,19 @@ async fn get_key(peer: &SocketAddr, key: String) -> Result<(), Box<dyn std::erro
 
     let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
 
-    match client.get_key(
-        tonic::Request::new(GetKeyRequest {
-            key
-        })
-    ).await {
+    match client
+        .get_key(tonic::Request::new(GetKeyRequest { key }))
+        .await
+    {
         Ok(response) => {
-            let GetKeyReply {value} = response.get_ref();
+            let GetKeyReply { value } = response.get_ref();
 
             println!("Value: {}", value);
-        },
+        }
         Err(err) => {
             println!("Error occured: {}", err.message());
         }
     }
-
 
     Ok(())
 }
@@ -107,23 +108,19 @@ struct StoreValueArgs {
 }
 
 async fn store_value(peer: &SocketAddr, value: String) -> Result<(), Box<dyn std::error::Error>> {
-
     let target_url = build_grpc_url(&peer);
 
     let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
 
-    let response = client.store(
-        tonic::Request::new(StoreRequest {
-            value,
-            hops: 0
-        })
-    ).await.unwrap();
+    let response = client
+        .store(tonic::Request::new(StoreRequest { value, hops: 0 }))
+        .await
+        .unwrap();
 
-    let StoreReply { stored_in, key} = response.get_ref();
+    let StoreReply { stored_in, key } = response.get_ref();
 
     println!("Stored in {}", stored_in);
     println!("at {}", key);
-
 
     Ok(())
 }

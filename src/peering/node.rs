@@ -214,7 +214,7 @@ impl GetStore for KnownPeer {
 
         match client.store(request).await {
             Ok(response) => {
-                let StoreReply {stored_in, .. } = response.into_inner();
+                let StoreReply { stored_in, .. } = response.into_inner();
                 Ok(stored_in.parse().unwrap())
             }
             Err(err) => Err(err),
@@ -346,7 +346,6 @@ impl MyPeeringNode {
             .min_by_key(|peer| peer.distance_to(hash))
             .unwrap() // we can unwrap here because we're sure the iterator has at least self in it
     }
-
 }
 
 #[tonic::async_trait]
@@ -363,7 +362,8 @@ impl PeeringNode for MyPeeringNode {
 
         let known_peers = locked_peers
             .values()
-            .map(|p| grpc::Peer::from(p.clone()))
+            .cloned()
+            .map(grpc::Peer::from)
             .collect();
 
         locked_peers.insert(new_peer_addr, KnownPeer::new(new_peer_addr));
@@ -380,15 +380,14 @@ impl PeeringNode for MyPeeringNode {
         let locked_peers = self.data.known_peers.read().unwrap().clone();
 
         let peers: Vec<_> = locked_peers
-            .into_iter()
-            .map(|(_, p)| p)
-            .chain(iter::once(KnownPeer::new(self.data.addr))) // also include our own address
-            .map(|p| p.clone().into())
+            .values()
+            .cloned()
+            .chain(iter::once(KnownPeer::new(self.data.addr)))
+            .map(grpc::Peer::from)
             .collect();
 
         Ok(Response::new(ListPeersReply { known_peers: peers }))
     }
-
 
     async fn get_key(
         &self,
@@ -410,10 +409,7 @@ impl PeeringNode for MyPeeringNode {
 
         let hash = Hash::hash(&value);
 
-        let addr = self
-            .get_nearest(&hash)
-            .store(&hash, value, hops)
-            .await?;
+        let addr = self.get_nearest(&hash).store(&hash, value, hops).await?;
 
         Ok(Response::new(StoreReply {
             key: hash.as_hex_string(),
