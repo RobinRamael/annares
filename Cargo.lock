@@ -12,6 +12,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "annares"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "generic-array",
+ "hex",
+ "prost",
+ "quickcheck",
+ "sha2",
+ "structopt",
+ "tokio",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "ansi_term"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -550,22 +566,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "winapi",
-]
-
-[[package]]
-name = "peering"
-version = "0.1.0"
-dependencies = [
- "futures",
- "generic-array",
- "hex",
- "prost",
- "quickcheck",
- "sha2",
- "structopt",
- "tokio",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]

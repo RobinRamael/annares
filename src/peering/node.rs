@@ -80,8 +80,6 @@ impl NodeData {
                 interval.tick().await;
 
                 if let Some(peer) = data.stalest_peer() {
-                    print!("Checking health of {}... ", &peer);
-
                     match PeeringNodeClient::connect(utils::build_grpc_url(&peer.addr))
                         .await
                         .as_mut()
@@ -91,10 +89,7 @@ impl NodeData {
                                 .check_health(Request::new(HealthCheckRequest {}))
                                 .await
                             {
-                                Ok(_) => {
-                                    println!("Healthy!");
-                                    data.mark_healthy(&peer);
-                                }
+                                Ok(_) => data.mark_healthy(&peer),
                                 Err(err) => {
                                     println!("Request failed: {}", err);
                                     data.purge(&peer);
@@ -134,9 +129,15 @@ impl NodeData {
             .min_by_key(|peer| peer.hash.cyclic_distance(hash))
     }
 
-    fn store_here(&self, hash: &Hash, value: String) {
+    fn store_here(&self, key: &Hash, value: String) {
         let mut data_shard = self.data_shard.write().unwrap();
-        data_shard.insert(hash.clone(), value);
+        data_shard.insert(key.clone(), value);
+    }
+
+    fn get_here(&self, key: &Hash) -> Option<String> {
+        let data_shard = self.data_shard.read().unwrap();
+
+        data_shard.get(key).cloned()
     }
 }
 
@@ -223,6 +224,29 @@ impl MyPeeringNode {
             ));
         }
     }
+
+    async fn delegate_get(&self, peer: &KnownPeer, key: &String) -> Result<String, Status> {
+        let target_url = utils::build_grpc_url(&peer.addr);
+
+        println!("delegating get to {}", &peer.addr);
+
+        if let Ok(client) = PeeringNodeClient::connect(target_url).await.as_mut() {
+            let request = Request::new(GetKeyRequest { key: key.clone() });
+
+            match client.get_key(request).await {
+                Ok(response) => {
+                    let GetKeyReply { value, .. } = response.into_inner();
+                    Ok(value)
+                }
+                Err(err) => Err(err),
+            }
+        } else {
+            return Err(Status::new(
+                tonic::Code::Internal,
+                "Failed to connect to delegated node",
+            ));
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -267,16 +291,44 @@ impl PeeringNode for MyPeeringNode {
 
     async fn get_key(
         &self,
-        _request: Request<GetKeyRequest>,
+        request: Request<GetKeyRequest>,
     ) -> Result<Response<GetKeyReply>, Status> {
-        unimplemented!();
-    }
+        let GetKeyRequest { key, .. } = request.into_inner();
 
-    async fn check_health(
-        &self,
-        _: Request<HealthCheckRequest>,
-    ) -> Result<Response<HealthCheckReply>, Status> {
-        Ok(Response::new(HealthCheckReply {}))
+        let hash: Hash = Hash::try_from(key).unwrap();
+
+        if let Some(nearest_peer) = self.data.get_nearest(&hash) {
+            let my_distance = self.data.hash.cyclic_distance(&hash);
+
+            if my_distance <= nearest_peer.hash.cyclic_distance(&hash) {
+                println!("I'm nearest!");
+                match self.data.get_here(&hash) {
+                    Some(value) => Ok(Response::new(GetKeyReply {
+                        value: value.clone(),
+                    })),
+                    None => Err(Status::new(tonic::Code::NotFound, "Not found")),
+                }
+            } else {
+                match self
+                    .delegate_get(&nearest_peer, &hash.as_hex_string())
+                    .await
+                {
+                    Ok(value) => Ok(Response::new(GetKeyReply { value })),
+                    Err(err) => Err(Status::new(
+                        tonic::Code::Internal,
+                        format!("Failed to delegate get: {}", err),
+                    )),
+                }
+            }
+        } else {
+            println!("I'm all alone!");
+            match self.data.get_here(&hash) {
+                Some(value) => Ok(Response::new(GetKeyReply {
+                    value: value.clone(),
+                })),
+                None => Err(Status::new(tonic::Code::NotFound, "Not found")),
+            }
+        }
     }
 
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
@@ -298,7 +350,10 @@ impl PeeringNode for MyPeeringNode {
                 }))
             } else {
                 match self.delegate_store(&nearest_peer, value, hops).await {
-                    Ok((addr, key)) => {Ok(Response::new(StoreReply { key, stored_in: addr.to_string() }))},
+                    Ok((addr, key)) => Ok(Response::new(StoreReply {
+                        key,
+                        stored_in: addr.to_string(),
+                    })),
                     Err(err) => Err(Status::new(
                         tonic::Code::Internal,
                         format!("Failed to delegate store: {}", err),
@@ -313,6 +368,13 @@ impl PeeringNode for MyPeeringNode {
                 stored_in: self.data.addr.to_string(),
             }))
         }
+    }
+
+    async fn check_health(
+        &self,
+        _: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckReply>, Status> {
+        Ok(Response::new(HealthCheckReply {}))
     }
 }
 

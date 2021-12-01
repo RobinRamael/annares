@@ -46,11 +46,11 @@ message StoreReply {
 }
 
 message GetKeyRequest {
-  /* string */ 
+  string key = 1;
 }
 
 message GetKeyReply {
-
+  string value = 1;
 }
 
 

@@ -1,6 +1,6 @@
 mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
-use peering::grpc::{ListPeersRequest, StoreRequest, StoreReply};
+use peering::grpc::{ListPeersRequest, StoreRequest, StoreReply, GetKeyRequest, GetKeyReply};
 use peering::node::KnownPeer;
 use peering::utils::build_grpc_url;
 
@@ -74,8 +74,22 @@ struct GetKeyArgs {
     key: String,
 }
 
-async fn get_key(_peer: &SocketAddr, _key: String) -> Result<(), Box<dyn std::error::Error>> {
-    todo!()
+async fn get_key(peer: &SocketAddr, key: String) -> Result<(), Box<dyn std::error::Error>> {
+    let target_url = build_grpc_url(&peer);
+
+    let mut client = PeeringNodeClient::connect(target_url).await.unwrap();
+
+    let response = client.get_key(
+        tonic::Request::new(GetKeyRequest {
+            key
+        })
+    ).await.unwrap();
+
+    let GetKeyReply {value} = response.get_ref();
+
+    println!("Value: {}", value);
+
+    Ok(())
 }
 
 #[derive(StructOpt, Debug)]
