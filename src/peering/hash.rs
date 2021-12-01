@@ -57,6 +57,15 @@ where
     }
 }
 
+impl<N> std::fmt::Display for Arru8<N>
+where
+    N: ArrayLength<u8> + Eq,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.as_hex_string())
+    }
+}
+
 impl<N> Arru8<N>
 where
     N: ArrayLength<u8> + Eq,

@@ -1,10 +1,7 @@
 
-function _build() {
-    cargo --quiet rustc --bin node -- -Awarnings
-    cargo --quiet rustc --bin client -- -Awarnings
-}
 
 function runfirst() {
+    cargo build
     kitty target/debug/node $1 &
 }
 

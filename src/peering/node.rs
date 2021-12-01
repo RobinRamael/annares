@@ -5,7 +5,8 @@ use crate::peering::grpc::peering_node_client::PeeringNodeClient;
 use crate::peering::grpc::peering_node_server::PeeringNode;
 use crate::peering::grpc::{
     GetKeyReply, GetKeyRequest, HealthCheckReply, HealthCheckRequest, IntroductionReply,
-    IntroductionRequest, ListPeersReply, ListPeersRequest, StoreReply, StoreRequest,
+    IntroductionRequest, KeyValuePair, ListPeersReply, ListPeersRequest, StoreReply, StoreRequest,
+    TransferReply, TransferRequest,
 };
 use crate::peering::hash::Hash;
 use crate::peering::utils;
@@ -115,6 +116,18 @@ impl NodeData {
         forever
     }
 
+    async fn stewardship_reassignment(self: &Arc<Self>, peer: &KnownPeer) {
+        // let self_clone = self.clone();
+        let to_transfer = self.reasses_stewardship_for(&peer);
+        let transferred_keys = peer.assign_stewardship(to_transfer).await.unwrap();
+
+        for key in &transferred_keys {
+            println!("Reassigning {} to {}", key.as_hex_string(), &peer);
+        }
+
+        self.remove_keys(transferred_keys);
+    }
+
     fn stalest_peer(&self) -> Option<KnownPeer> {
         let peers = self.known_peers.read();
 
@@ -125,15 +138,22 @@ impl NodeData {
             .max_by_key(|p| Instant::now() - p.last_contact)
     }
 
-    fn store_here(&self, key: &Hash, value: String) {
-        let mut data_shard = self.data_shard.write().unwrap();
-        data_shard.insert(key.clone(), value);
+    fn reasses_stewardship_for(&self, peer: &KnownPeer) -> Vec<(Hash, String)> {
+        let data_shard = self.data_shard.read().unwrap().clone();
+
+        data_shard
+            .into_iter()
+            .filter(|(key, _val)| peer.distance_to(key) < self.distance_to(key))
+            .collect()
     }
 
-    fn get_here(&self, key: &Hash) -> Option<String> {
-        let data_shard = self.data_shard.read().unwrap();
+    fn remove_keys(&self, keys: Vec<Hash>) {
+        let mut data_shard = self.data_shard.write().unwrap();
 
-        data_shard.get(key).cloned()
+        for key in keys {
+            println!("deleting {}", &key);
+            data_shard.remove(&key);
+        }
     }
 }
 
@@ -172,18 +192,56 @@ impl KnownPeer {
         }
     }
 
+    // TODO: this should return a custom error instead of a status so that error can be
+    // tranformed into either a status or a transporterror
     async fn connect(&self) -> Result<PeeringNodeClient<tonic::transport::Channel>, Status> {
         let target_url = utils::build_grpc_url(&self.addr);
+        println!("connecting to {}", &target_url);
 
         match PeeringNodeClient::connect(target_url).await {
             Ok(client) => Ok(client),
-            Err(_) => Err(Status::new(
-                tonic::Code::Internal,
-                "Failed to connect to delegated node",
-            )),
+            Err(err) => {
+                println!("Error connecting: {}", err);
+                Err(Status::new(
+                    tonic::Code::Internal,
+                    "Failed to connect to delegated node",
+                ))
+            }
         }
     }
+
+    async fn assign_stewardship(
+        &self,
+        kv_pairs: Vec<(Hash, String)>,
+    ) -> Result<Vec<Hash>, tonic::transport::Error> {
+        let mut client = self.connect().await.unwrap();
+
+        Ok(client
+            .transfer(Request::new(TransferRequest {
+                to_store: kv_pairs
+                    .into_iter()
+                    .map(|kv| {
+                        let (key, value) = kv;
+                        KeyValuePair {
+                            key: key.as_hex_string(),
+                            value,
+                        }
+                    })
+                    .collect(),
+            }))
+            .await
+            .map(|response| {
+                let TransferReply { transferred_keys } = response.get_ref();
+                transferred_keys
+                    .iter()
+                    .cloned()
+                    .map(|s| s.try_into().unwrap())
+                    .collect()
+            })
+            .unwrap())
+    }
 }
+
 #[tonic::async_trait]
 impl GetStore for KnownPeer {
     async fn get_key(&self, key: &Hash) -> Result<String, Status> {
@@ -279,60 +337,6 @@ impl MyPeeringNode {
         Ok(new_peers)
     }
 
-    async fn delegate_store(
-        &self,
-        peer: &KnownPeer,
-        value: String,
-        hops: u32,
-    ) -> Result<(SocketAddr, String), Status> {
-        let target_url = utils::build_grpc_url(&peer.addr);
-
-        println!("delegating store to {}", &peer.addr);
-
-        if let Ok(client) = PeeringNodeClient::connect(target_url).await.as_mut() {
-            let request = Request::new(StoreRequest {
-                value,
-                hops: hops + 1,
-            });
-
-            match client.store(request).await {
-                Ok(response) => {
-                    let StoreReply { key, stored_in, .. } = response.into_inner();
-                    Ok((stored_in.parse().unwrap(), key))
-                }
-                Err(err) => Err(err),
-            }
-        } else {
-            return Err(Status::new(
-                tonic::Code::Internal,
-                "Failed to connect to delegated node",
-            ));
-        }
-    }
-
-    async fn delegate_get(&self, peer: &KnownPeer, key: &String) -> Result<String, Status> {
-        let target_url = utils::build_grpc_url(&peer.addr);
-
-        println!("delegating get to {}", &peer.addr);
-
-        if let Ok(client) = PeeringNodeClient::connect(target_url).await.as_mut() {
-            let request = Request::new(GetKeyRequest { key: key.clone() });
-
-            match client.get_key(request).await {
-                Ok(response) => {
-                    let GetKeyReply { value, .. } = response.into_inner();
-                    Ok(value)
-                }
-                Err(err) => Err(err),
-            }
-        } else {
-            return Err(Status::new(
-                tonic::Code::Internal,
-                "Failed to connect to delegated node",
-            ));
-        }
-    }
-
     fn get_nearest(&self, hash: &Hash) -> Arc<dyn GetStore + Send + Sync> {
         let this_node = self.data.clone();
         let peers = self.data.known_peers.read();
@@ -345,6 +349,14 @@ impl MyPeeringNode {
             .chain(iter::once(this_node as Arc<dyn GetStore + Send + Sync>))
             .min_by_key(|peer| peer.distance_to(hash))
             .unwrap() // we can unwrap here because we're sure the iterator has at least self in it
+    }
+
+    async fn spawn_stewardship_reassignment(self: &Arc<Self>, peer: KnownPeer) {
+        let data = Arc::clone(&self.data);
+
+        tokio::task::spawn(async move {
+            data.stewardship_reassignment(&peer).await;
+        });
     }
 }
 
@@ -366,7 +378,17 @@ impl PeeringNode for MyPeeringNode {
             .map(grpc::Peer::from)
             .collect();
 
-        locked_peers.insert(new_peer_addr, KnownPeer::new(new_peer_addr));
+        let new_peer = KnownPeer::new(new_peer_addr);
+        let new_peer_clone = new_peer.clone();
+        locked_peers.insert(new_peer_addr, new_peer);
+
+        let data = self.data.clone();
+
+        tokio::task::spawn(async move {
+            println!("spawned!");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            data.stewardship_reassignment(&new_peer_clone).await;
+        });
 
         print_peers(&locked_peers);
 
@@ -422,6 +444,34 @@ impl PeeringNode for MyPeeringNode {
         _: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckReply>, Status> {
         Ok(Response::new(HealthCheckReply {}))
+    }
+
+    async fn transfer(
+        &self,
+        request: Request<TransferRequest>,
+    ) -> Result<Response<TransferReply>, Status> {
+        let TransferRequest { to_store, .. } = request.into_inner();
+
+        let mut data_shard = self.data.data_shard.write().unwrap();
+
+        let transferred_keys: Vec<String> = to_store
+            .into_iter()
+            .map(|kv| {
+                let KeyValuePair { key, value } = kv;
+                (Hash::try_from(key).unwrap(), value)
+            })
+            .map(|(key, value)| {
+                data_shard.insert(key.clone(), value);
+                key
+            })
+            .map(|key| key.as_hex_string())
+            .collect();
+
+        for key in &transferred_keys {
+            println!("Reassigned {} to me!", key);
+        }
+
+        Ok(Response::new(TransferReply { transferred_keys }))
     }
 }
 
