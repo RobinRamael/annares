@@ -18,6 +18,12 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 
+#[tonic::async_trait]
+trait GetStore {
+    async fn get_key(&self, key: &Hash) -> Result<String, Status>;
+    async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status>;
+}
+
 #[derive(Debug)]
 pub struct MyPeeringNode {
     pub data: Arc<NodeData>,
@@ -138,6 +144,86 @@ impl NodeData {
         let data_shard = self.data_shard.read().unwrap();
 
         data_shard.get(key).cloned()
+    }
+}
+
+
+#[tonic::async_trait]
+impl GetStore for NodeData {
+   async fn get_key(&self, key: &Hash) -> Result<String, Status> {
+        let data_shard = self.data_shard.read().unwrap();
+
+        match data_shard.get(key).cloned() {
+            Some(value) => Ok(value),
+            None => Err(Status::new(
+                tonic::Code::NotFound,
+                format!("key {} not found", key.as_hex_string()),
+            )),
+        }
+    }
+
+   async fn store(&self, key: &Hash, value: String, _hops: u32) -> Result<SocketAddr, Status> {
+        let mut data_shard = self.data_shard.write().unwrap();
+        data_shard.insert(key.clone(), value);
+        Ok(self.addr)
+    }
+}
+
+impl KnownPeer {
+    pub fn new(addr: SocketAddr) -> Self {
+        KnownPeer {
+            addr,
+            hash: Hash::hash(&addr.to_string()),
+            last_contact: Instant::now(),
+            contacts: 0,
+        }
+    }
+
+    async fn connect(&self) -> Result<PeeringNodeClient<tonic::transport::Channel>, Status> {
+        let target_url = utils::build_grpc_url(&self.addr);
+
+        match PeeringNodeClient::connect(target_url).await {
+            Ok(client) => Ok(client),
+            Err(_) =>  Err(Status::new(
+                tonic::Code::Internal,
+                "Failed to connect to delegated node",
+            ))
+        }
+    }
+}
+#[tonic::async_trait]
+impl GetStore for KnownPeer {
+    async fn get_key(&self, key: &Hash) -> Result<String, Status> {
+        println!("delegating get to {}", &self.addr);
+
+        let mut client = self.connect().await?;
+        let request = Request::new(GetKeyRequest { key: key.as_hex_string() });
+
+        match client.get_key(request).await {
+            Ok(response) => {
+                let GetKeyReply { value, .. } = response.into_inner();
+                Ok(value)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
+        println!("delegating store to {}", &self.addr);
+        let mut client = self.connect().await?;
+
+        let request = Request::new(StoreRequest {
+            value,
+            hops: hops + 1,
+        });
+
+        match client.store(request).await {
+            Ok(response) => {
+                let StoreReply { key, stored_in, .. } = response.into_inner();
+                Ok(stored_in.parse().unwrap())
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -378,16 +464,6 @@ impl PeeringNode for MyPeeringNode {
     }
 }
 
-impl KnownPeer {
-    pub fn new(addr: SocketAddr) -> Self {
-        KnownPeer {
-            addr,
-            hash: Hash::hash(&addr.to_string()),
-            last_contact: Instant::now(),
-            contacts: 0,
-        }
-    }
-}
 
 impl Display for KnownPeer {
     fn fmt(&self, fmtr: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
