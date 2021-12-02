@@ -6,13 +6,14 @@ mod peering;
 
 use peering::grpc::peering_node_server::PeeringNodeServer;
 
-use peering::node::{print_peers, KnownPeer, MyPeeringNode, NodeData};
+use peering::node::{KnownPeer, MyPeeringNode, NodeData};
 use peering::utils;
 
 use tonic::transport::Server;
 
 use tokio::time::Duration;
 use tracing::{info, instrument};
+use tracing_appender;
 use tracing_subscriber;
 
 #[derive(StructOpt, Debug)]
@@ -29,7 +30,9 @@ struct Cli {
 #[instrument]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    let file_appender = tracing_appender::rolling::hourly("/tmp/logs", "annares.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt().with_writer(non_blocking).init();
 
     let args = Cli::from_args();
 

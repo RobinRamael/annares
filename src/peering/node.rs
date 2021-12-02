@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument};
 
 #[tonic::async_trait]
 trait GetStore {
@@ -498,7 +498,7 @@ impl PeeringNode for MyPeeringNode {
         &self,
         _: Request<GetDataShardRequest>,
     ) -> Result<Response<GetDataShardReply>, Status> {
-        info!("received get data shard");
+        debug!("received get data shard");
         let shard = self.data.data_shard.read().unwrap();
 
         Ok(Response::new(GetDataShardReply {
