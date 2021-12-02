@@ -7,3 +7,7 @@ pub fn build_grpc_url(addr: &SocketAddr) -> String {
 pub fn ipv6_loopback_socketaddr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0x1)), port)
 }
+
+pub fn shorten(s: &String) -> &str {
+    &s[60..]
+}

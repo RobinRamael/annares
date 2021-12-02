@@ -6,13 +6,14 @@ mod peering;
 
 use peering::grpc::peering_node_server::PeeringNodeServer;
 
-use peering::node::{KnownPeer, MyPeeringNode, NodeData};
+use peering::node::{Node, NodeData};
+use peering::peer::KnownPeer;
 use peering::utils;
 
 use tonic::transport::Server;
 
 use tokio::time::Duration;
-use tracing::{info, instrument};
+use tracing::info;
 use tracing_appender;
 use tracing_subscriber;
 
@@ -27,10 +28,9 @@ struct Cli {
     pub check_interval: u64,
 }
 
-#[instrument]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file_appender = tracing_appender::rolling::hourly("/tmp/logs", "annares.log");
+    let file_appender = tracing_appender::rolling::daily("/tmp/logs", "annares.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt().with_writer(non_blocking).init();
 
@@ -46,14 +46,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let my_data = Arc::new(NodeData::new(args.port, peers));
 
-    let my_peering_node = MyPeeringNode::new(my_data.clone());
+    let my_peering_node = Node::new(my_data.clone(), args.port.to_string());
 
     my_peering_node.mingle().await?;
 
     let data_clone = my_data.clone();
 
     tokio::task::spawn(async move {
-        info!("starting peer check loop");
         data_clone
             .peer_check_loop(Duration::from_secs(args.check_interval))
             .await

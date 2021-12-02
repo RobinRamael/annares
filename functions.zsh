@@ -10,8 +10,10 @@ function run() {
 }
 
 function runs {
+    echo killing all nodes
+    pkill node
     runfirst 5001; 
-    ((last_port = 5000 + $1))
+    ((last_port = 5000 + $1 - 1))
     for peer in {5001..$last_port}; do
         ((port = $peer + 1));
         sleep 1;

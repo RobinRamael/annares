@@ -2,9 +2,9 @@ mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
 use peering::grpc::{
     GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, KeyValuePair,
-    ListPeersReply, ListPeersRequest, StoreReply, StoreRequest,
+    ListPeersReply, ListPeersRequest, ShutDownReply, ShutDownRequest, StoreReply, StoreRequest,
 };
-use peering::node::KnownPeer;
+use peering::peer::KnownPeer;
 use peering::utils::build_grpc_url;
 
 use std::net::{AddrParseError, SocketAddr};
@@ -167,6 +167,34 @@ impl ClientAction for GetAllAction {
     }
 }
 
+struct ShutDownAction {}
+
+impl ShutDownAction {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+#[tonic::async_trait]
+impl ClientAction for ShutDownAction {
+    type Request = ShutDownRequest;
+    type Response = ShutDownReply;
+
+    fn build_request(&self) -> Self::Request {
+        Self::Request {}
+    }
+
+    async fn call(
+        &self,
+        mut client: PeeringNodeClient<tonic::transport::Channel>,
+        request: tonic::Request<Self::Request>,
+    ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
+        client.shut_down(request).await
+    }
+
+    fn handle_response(&self, _: &Self::Response) {}
+}
+
 struct StoreValueAction {
     value: String,
 }
@@ -247,6 +275,12 @@ struct GetAllArgs {
 }
 
 #[derive(StructOpt, Debug)]
+struct ShutDownArgs {
+    #[structopt(flatten)]
+    base: BaseCli,
+}
+
+#[derive(StructOpt, Debug)]
 #[structopt(name = "client")]
 enum Cli {
     #[structopt(name = "list-peers")]
@@ -260,6 +294,9 @@ enum Cli {
 
     #[structopt(name = "get-all")]
     GetAll(GetAllArgs),
+
+    #[structopt(name = "shutdown")]
+    ShutDown(ShutDownArgs),
 }
 
 #[tokio::main]
@@ -280,6 +317,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cli::GetAll(cfg) => {
             let client = connect(&cfg.base.peer).await;
             GetAllAction::new().perform(client).await;
+        }
+        Cli::ShutDown(cfg) => {
+            let client = connect(&cfg.base.peer).await;
+            ShutDownAction::new().perform(client).await;
         }
     }
     Ok(())

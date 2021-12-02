@@ -6,14 +6,16 @@ use crate::peering::grpc::peering_node_server::PeeringNode;
 use crate::peering::grpc::{
     GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, HealthCheckReply,
     HealthCheckRequest, IntroductionReply, IntroductionRequest, KeyValuePair, ListPeersReply,
-    ListPeersRequest, StoreReply, StoreRequest, TransferReply, TransferRequest,
+    ListPeersRequest, ShutDownReply, ShutDownRequest, StoreReply, StoreRequest, TransferReply,
+    TransferRequest,
 };
 use crate::peering::hash::Hash;
+use crate::peering::peer::KnownPeer;
 use crate::peering::utils;
 use std::iter;
 
 use std::collections::HashMap;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -22,16 +24,11 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, instrument};
 
 #[tonic::async_trait]
-trait GetStore {
+pub trait GetStore {
     async fn get_key(&self, key: &Hash) -> Result<String, Status>;
     async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status>;
 
     fn distance_to(&self, key: &Hash) -> Hash;
-}
-
-#[derive(Debug)]
-pub struct MyPeeringNode {
-    pub data: Arc<NodeData>,
 }
 
 #[derive(Debug)]
@@ -40,14 +37,6 @@ pub struct NodeData {
     pub hash: Hash,
     pub known_peers: Arc<RwLock<HashMap<SocketAddr, KnownPeer>>>,
     pub data_shard: Arc<RwLock<HashMap<Hash, String>>>,
-}
-
-#[derive(PartialEq, Eq, std::hash::Hash, Clone)]
-pub struct KnownPeer {
-    pub addr: SocketAddr,
-    pub hash: Hash,
-    pub last_contact: Instant,
-    pub contacts: u64,
 }
 
 impl NodeData {
@@ -124,9 +113,9 @@ impl NodeData {
         let to_transfer = self.reasses_stewardship_for(&peer);
         let transferred_keys = peer.assign_stewardship(to_transfer).await.unwrap();
 
-        // for key in &transferred_keys {
-        //     println!("Reassigning {} to {}", key.as_hex_string(), &peer);
-        // }
+        for key in &transferred_keys {
+            info!(key=?key.as_hex_string(), peer=?&peer, "Reassigning");
+        }
 
         self.remove_keys(transferred_keys);
     }
@@ -185,111 +174,14 @@ impl GetStore for NodeData {
     }
 }
 
-impl KnownPeer {
-    pub fn new(addr: SocketAddr) -> Self {
-        KnownPeer {
-            addr,
-            hash: Hash::hash(&addr.to_string()),
-            last_contact: Instant::now(),
-            contacts: 0,
-        }
-    }
-
-    // TODO: this should return a custom error instead of a status so that error can be
-    // tranformed into either a status or a transporterror
-    async fn connect(&self) -> Result<PeeringNodeClient<tonic::transport::Channel>, Status> {
-        let target_url = utils::build_grpc_url(&self.addr);
-        // println!("connecting to {}", &target_url);
-
-        match PeeringNodeClient::connect(target_url).await {
-            Ok(client) => Ok(client),
-            Err(err) => {
-                error!("Error connecting: {}", err = err);
-                Err(Status::new(
-                    tonic::Code::Internal,
-                    "Failed to connect to delegated node",
-                ))
-            }
-        }
-    }
-
-    async fn assign_stewardship(
-        &self,
-        kv_pairs: Vec<(Hash, String)>,
-    ) -> Result<Vec<Hash>, tonic::transport::Error> {
-        let mut client = self.connect().await.unwrap();
-
-        Ok(client
-            .transfer(Request::new(TransferRequest {
-                to_store: kv_pairs
-                    .into_iter()
-                    .map(|kv| {
-                        let (key, value) = kv;
-                        KeyValuePair {
-                            key: key.as_hex_string(),
-                            value,
-                        }
-                    })
-                    .collect(),
-            }))
-            .await
-            .map(|response| {
-                let TransferReply { transferred_keys } = response.get_ref();
-                transferred_keys
-                    .iter()
-                    .cloned()
-                    .map(|s| s.try_into().unwrap())
-                    .collect()
-            })
-            .unwrap())
-    }
+pub struct Node {
+    pub name: String,
+    pub data: Arc<NodeData>,
 }
 
-#[tonic::async_trait]
-impl GetStore for KnownPeer {
-    async fn get_key(&self, key: &Hash) -> Result<String, Status> {
-        // println!("delegating get to {}", &self.addr);
-
-        let mut client = self.connect().await?;
-        let request = Request::new(GetKeyRequest {
-            key: key.as_hex_string(),
-        });
-
-        match client.get_key(request).await {
-            Ok(response) => {
-                let GetKeyReply { value, .. } = response.into_inner();
-                Ok(value)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn store(&self, _key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
-        // println!("delegating store to {}", &self.addr);
-        let mut client = self.connect().await?;
-
-        let request = Request::new(StoreRequest {
-            value,
-            hops: hops + 1,
-        });
-
-        match client.store(request).await {
-            Ok(response) => {
-                let StoreReply { stored_in, .. } = response.into_inner();
-                Ok(stored_in.parse().unwrap())
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    fn distance_to(&self, key: &Hash) -> Hash {
-        self.hash.cyclic_distance(key)
-    }
-}
-
-impl MyPeeringNode {
-    pub fn new(data: Arc<NodeData>) -> MyPeeringNode {
-        MyPeeringNode { data }
+impl Node {
+    pub fn new(data: Arc<NodeData>, name: String) -> Node {
+        Node { data, name }
     }
 
     pub async fn mingle(&self) -> Result<(), tonic::transport::Error> {
@@ -364,15 +256,14 @@ impl MyPeeringNode {
 }
 
 #[tonic::async_trait]
-impl PeeringNode for MyPeeringNode {
-    #[instrument]
+impl PeeringNode for Node {
+    #[instrument(skip(request), fields(from=?request.get_ref().sender_adress))]
     async fn introduce(
         &self,
         request: Request<IntroductionRequest>,
     ) -> Result<Response<IntroductionReply>, Status> {
         let new_peer_addr = request.into_inner().sender_adress.parse().unwrap();
 
-        info!("received introduction from {}", addr = new_peer_addr);
         // println!("received introduction from {:?}", new_peer_addr);
 
         let mut locked_peers = self.data.known_peers.write().unwrap();
@@ -408,13 +299,13 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(IntroductionReply { known_peers }))
     }
 
-    #[instrument]
+    #[instrument(skip(request), fields(key=?utils::shorten(&request.get_ref().key)))]
     async fn get_key(
         &self,
         request: Request<GetKeyRequest>,
     ) -> Result<Response<GetKeyReply>, Status> {
         let GetKeyRequest { key, .. } = request.into_inner();
-        info!("received get_key {}", key = key);
+        info!("hello?");
 
         let hash: Hash = Hash::try_from(key).unwrap();
 
@@ -423,7 +314,7 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(GetKeyReply { value }))
     }
 
-    #[instrument]
+    #[instrument(skip(request), fields(value=?request.get_ref().value))]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
         let StoreRequest { value, hops, .. } = request.into_inner();
 
@@ -439,22 +330,32 @@ impl PeeringNode for MyPeeringNode {
         }))
     }
 
-    #[instrument]
+    #[instrument(skip(_request), level = "debug")]
     async fn check_health(
         &self,
-        _: Request<HealthCheckRequest>,
+        _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckReply>, Status> {
-        info!("received health check");
         Ok(Response::new(HealthCheckReply {}))
     }
 
-    #[instrument]
+    #[instrument(skip(_request))]
+    async fn shut_down(
+        &self,
+        _request: Request<ShutDownRequest>,
+    ) -> Result<Response<ShutDownReply>, Status> {
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            std::process::exit(0)
+        });
+        Ok(Response::new(ShutDownReply {}))
+    }
+
+    #[instrument(skip(request), fields(n=?request.get_ref().to_store.len()))]
     async fn transfer(
         &self,
         request: Request<TransferRequest>,
     ) -> Result<Response<TransferReply>, Status> {
         let TransferRequest { to_store, .. } = request.into_inner();
-        info!("received transfer for {} keys", n = to_store.len());
 
         let mut data_shard = self.data.data_shard.write().unwrap();
 
@@ -475,10 +376,10 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(TransferReply { transferred_keys }))
     }
 
-    #[instrument]
+    #[instrument(skip(_request))]
     async fn list_peers(
         &self,
-        _: Request<ListPeersRequest>,
+        _request: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
         info!("received list peers");
         let locked_peers = self.data.known_peers.read().unwrap().clone();
@@ -493,10 +394,10 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(ListPeersReply { known_peers: peers }))
     }
 
-    #[instrument]
+    #[instrument(skip(_request))]
     async fn get_data_shard(
         &self,
-        _: Request<GetDataShardRequest>,
+        _request: Request<GetDataShardRequest>,
     ) -> Result<Response<GetDataShardReply>, Status> {
         debug!("received get data shard");
         let shard = self.data.data_shard.read().unwrap();
@@ -514,37 +415,9 @@ impl PeeringNode for MyPeeringNode {
     }
 }
 
-impl Display for KnownPeer {
-    fn fmt(&self, fmtr: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(fmtr, "{}", self.addr)
-    }
-}
-
-impl From<KnownPeer> for grpc::Peer {
-    fn from(peering_node: KnownPeer) -> Self {
-        grpc::Peer {
-            addr: peering_node.addr.to_string(),
-            hash: peering_node.hash.as_hex_string(),
-        }
-    }
-}
-
-impl TryFrom<grpc::Peer> for KnownPeer {
-    type Error = std::net::AddrParseError;
-
-    fn try_from(grpc_peer: grpc::Peer) -> Result<Self, Self::Error> {
-        let addr = grpc_peer.addr.parse::<SocketAddr>()?;
-
-        Ok(KnownPeer::new(addr))
-    }
-}
-
-impl Debug for KnownPeer {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("KnownPeer")
-            .field("addr", &self.addr)
-            .field("contacts", &self.contacts)
-            .finish()
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("Node").field("name", &self.name).finish()
     }
 }
 

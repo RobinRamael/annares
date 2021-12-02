@@ -12,6 +12,7 @@ service PeeringNode {
   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
   rpc getDataShard (GetDataShardRequest) returns (GetDataShardReply);
 
+  rpc shutDown (ShutDownRequest) returns (ShutDownReply);
 }
 
 message IntroductionRequest {
@@ -76,4 +77,7 @@ message GetDataShardRequest {
 message GetDataShardReply {
   repeated KeyValuePair shard = 1;
 }
+
+message ShutDownRequest {}
+message ShutDownReply {}
 
