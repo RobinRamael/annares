@@ -19,6 +19,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 
+use tracing::{debug, error, info, instrument, trace, warn};
+
 #[tonic::async_trait]
 trait GetStore {
     async fn get_key(&self, key: &Hash) -> Result<String, Status>;
@@ -62,7 +64,8 @@ impl NodeData {
     }
 
     fn purge(&self, peer: &KnownPeer) {
-        println!("Purging {}", peer);
+        // println!("Purging {}", peer);
+        info!("purging {}", peer = &peer);
         let mut peers = self.known_peers.write().unwrap();
         assert!(peers.contains_key(&peer.addr));
         peers.remove(&peer.addr);
@@ -100,13 +103,13 @@ impl NodeData {
                             {
                                 Ok(_) => data.mark_healthy(&peer),
                                 Err(err) => {
-                                    println!("Request failed: {}", err);
+                                    error!("Request failed: {}", err = err);
                                     data.purge(&peer);
                                 }
                             }
                         }
                         Err(err) => {
-                            println!("Connection failed: {}", err);
+                            error!("connection failed: {}", err = err);
                             data.purge(&peer);
                         }
                     };
@@ -121,9 +124,9 @@ impl NodeData {
         let to_transfer = self.reasses_stewardship_for(&peer);
         let transferred_keys = peer.assign_stewardship(to_transfer).await.unwrap();
 
-        for key in &transferred_keys {
-            println!("Reassigning {} to {}", key.as_hex_string(), &peer);
-        }
+        // for key in &transferred_keys {
+        //     println!("Reassigning {} to {}", key.as_hex_string(), &peer);
+        // }
 
         self.remove_keys(transferred_keys);
     }
@@ -151,7 +154,7 @@ impl NodeData {
         let mut data_shard = self.data_shard.write().unwrap();
 
         for key in keys {
-            println!("deleting {}", &key);
+            // println!("deleting {}", &key);
             data_shard.remove(&key);
         }
     }
@@ -196,12 +199,12 @@ impl KnownPeer {
     // tranformed into either a status or a transporterror
     async fn connect(&self) -> Result<PeeringNodeClient<tonic::transport::Channel>, Status> {
         let target_url = utils::build_grpc_url(&self.addr);
-        println!("connecting to {}", &target_url);
+        // println!("connecting to {}", &target_url);
 
         match PeeringNodeClient::connect(target_url).await {
             Ok(client) => Ok(client),
             Err(err) => {
-                println!("Error connecting: {}", err);
+                error!("Error connecting: {}", err = err);
                 Err(Status::new(
                     tonic::Code::Internal,
                     "Failed to connect to delegated node",
@@ -245,7 +248,7 @@ impl KnownPeer {
 #[tonic::async_trait]
 impl GetStore for KnownPeer {
     async fn get_key(&self, key: &Hash) -> Result<String, Status> {
-        println!("delegating get to {}", &self.addr);
+        // println!("delegating get to {}", &self.addr);
 
         let mut client = self.connect().await?;
         let request = Request::new(GetKeyRequest {
@@ -262,7 +265,7 @@ impl GetStore for KnownPeer {
     }
 
     async fn store(&self, _key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
-        println!("delegating store to {}", &self.addr);
+        // println!("delegating store to {}", &self.addr);
         let mut client = self.connect().await?;
 
         let request = Request::new(StoreRequest {
@@ -317,7 +320,7 @@ impl MyPeeringNode {
     ) -> Result<Vec<KnownPeer>, tonic::transport::Error> {
         let target_url = utils::build_grpc_url(target_addr);
 
-        println!("sending intro to {}", target_addr);
+        // println!("sending intro to {}", target_addr);
 
         let mut client = PeeringNodeClient::connect(target_url).await?;
 
@@ -362,13 +365,15 @@ impl MyPeeringNode {
 
 #[tonic::async_trait]
 impl PeeringNode for MyPeeringNode {
+    #[instrument]
     async fn introduce(
         &self,
         request: Request<IntroductionRequest>,
     ) -> Result<Response<IntroductionReply>, Status> {
         let new_peer_addr = request.into_inner().sender_adress.parse().unwrap();
 
-        println!("received introduction from {:?}", new_peer_addr);
+        info!("received introduction from {}", addr = new_peer_addr);
+        // println!("received introduction from {:?}", new_peer_addr);
 
         let mut locked_peers = self.data.known_peers.write().unwrap();
 
@@ -385,21 +390,31 @@ impl PeeringNode for MyPeeringNode {
         let data = self.data.clone();
 
         tokio::task::spawn(async move {
-            println!("spawned!");
+            // println!("spawned!");
             tokio::time::sleep(Duration::from_millis(100)).await;
             data.stewardship_reassignment(&new_peer_clone).await;
         });
 
-        print_peers(&locked_peers);
+        debug!(
+            "peers are now {}",
+            &locked_peers
+                .values()
+                .cloned()
+                .map(|p| p.addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
         Ok(Response::new(IntroductionReply { known_peers }))
     }
 
+    #[instrument]
     async fn get_key(
         &self,
         request: Request<GetKeyRequest>,
     ) -> Result<Response<GetKeyReply>, Status> {
         let GetKeyRequest { key, .. } = request.into_inner();
+        info!("received get_key {}", key = key);
 
         let hash: Hash = Hash::try_from(key).unwrap();
 
@@ -408,10 +423,11 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(GetKeyReply { value }))
     }
 
+    #[instrument]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
         let StoreRequest { value, hops, .. } = request.into_inner();
 
-        println!("received store request for {}", &value);
+        info!("received store {}", value = value);
 
         let hash = Hash::hash(&value);
 
@@ -423,18 +439,22 @@ impl PeeringNode for MyPeeringNode {
         }))
     }
 
+    #[instrument]
     async fn check_health(
         &self,
         _: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckReply>, Status> {
+        info!("received health check");
         Ok(Response::new(HealthCheckReply {}))
     }
 
+    #[instrument]
     async fn transfer(
         &self,
         request: Request<TransferRequest>,
     ) -> Result<Response<TransferReply>, Status> {
         let TransferRequest { to_store, .. } = request.into_inner();
+        info!("received transfer for {} keys", n = to_store.len());
 
         let mut data_shard = self.data.data_shard.write().unwrap();
 
@@ -446,22 +466,21 @@ impl PeeringNode for MyPeeringNode {
             })
             .map(|(key, value)| {
                 data_shard.insert(key.clone(), value);
+                debug!("Reassigned {} to me!", &key);
                 key
             })
             .map(|key| key.as_hex_string())
             .collect();
 
-        for key in &transferred_keys {
-            println!("Reassigned {} to me!", key);
-        }
-
         Ok(Response::new(TransferReply { transferred_keys }))
     }
 
+    #[instrument]
     async fn list_peers(
         &self,
         _: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
+        info!("received list peers");
         let locked_peers = self.data.known_peers.read().unwrap().clone();
 
         let peers: Vec<_> = locked_peers
@@ -474,10 +493,12 @@ impl PeeringNode for MyPeeringNode {
         Ok(Response::new(ListPeersReply { known_peers: peers }))
     }
 
+    #[instrument]
     async fn get_data_shard(
         &self,
         _: Request<GetDataShardRequest>,
     ) -> Result<Response<GetDataShardReply>, Status> {
+        info!("received get data shard");
         let shard = self.data.data_shard.read().unwrap();
 
         Ok(Response::new(GetDataShardReply {

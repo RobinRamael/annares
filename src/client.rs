@@ -167,9 +167,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cli::GetKey(cfg) => {
             get_key(&cfg.base.peer, cfg.key).await?;
         }
-        Cli::GetKey(cfg) => {
-            get_key(&cfg.base.peer, cfg.key).await?;
-        }
         Cli::GetAll(cfg) => {
             get_all(&cfg.peer).await?;
         }
