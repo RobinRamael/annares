@@ -92,14 +92,14 @@ impl NodeData {
                                 Err(err) => {
                                     error!("Request failed: {}", err = err);
                                     data.purge(&peer).await;
-                                    self.clone().reassign_secondary_stewardships(&peer).await;
+                                    data.reassign_secondary_stewardships(&peer).await;
                                 }
                             }
                         }
                         Err(err) => {
                             error!("connection failed: {}", err = err);
                             data.purge(&peer).await;
-                            self.clone().reassign_secondary_stewardships(&peer).await;
+                            data.reassign_secondary_stewardships(&peer).await;
                         }
                     };
                 }
