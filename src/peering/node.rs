@@ -13,6 +13,7 @@ use crate::peering::hash::Hash;
 use crate::peering::peer::KnownPeer;
 use crate::peering::utils;
 use std::iter;
+use utils::shorten;
 
 use rand::seq::IteratorRandom;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, span, Level};
 
 const REDUNDANCY: usize = 1;
 
@@ -50,12 +51,14 @@ impl NodeData {
         }
     }
 
-    async fn purge(&self, peer: &KnownPeer) {
-        // println!("Purging {}", peer);
+    async fn purge(self: &Arc<Self>, peer: &KnownPeer) {
         info!("purging {}", peer = &peer);
         let mut peers = self.known_peers.write().await;
         assert!(peers.contains_key(&peer.addr));
         peers.remove(&peer.addr);
+        info!(peers=?peers, "peers after purge");
+        drop(peers);
+        self.reassign_secondary_stewardships(&peer).await;
     }
 
     async fn mark_healthy(&self, peer: &KnownPeer) {
@@ -75,8 +78,10 @@ impl NodeData {
         let forever = tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(interval);
 
+            let span = span!(Level::INFO, "health_loop", addr=?data.addr);
             loop {
                 interval.tick().await;
+                let _enter = span.enter();
 
                 if let Some(peer) = data.stalest_peer().await {
                     match PeeringNodeClient::connect(utils::build_grpc_url(&peer.addr))
@@ -92,14 +97,12 @@ impl NodeData {
                                 Err(err) => {
                                     error!("Request failed: {}", err = err);
                                     data.purge(&peer).await;
-                                    data.reassign_secondary_stewardships(&peer).await;
                                 }
                             }
                         }
                         Err(err) => {
                             error!("connection failed: {}", err = err);
                             data.purge(&peer).await;
-                            data.reassign_secondary_stewardships(&peer).await;
                         }
                     };
                 }
@@ -114,19 +117,27 @@ impl NodeData {
         let transferred_keys = peer.transfer_stewardship(to_transfer).await.unwrap();
 
         for key in &transferred_keys {
-            info!(key=?key.as_hex_string(), peer=?&peer, "Reassigning");
+            info!(key=?shorten(&key.as_hex_string()), peer=?&peer, "Reassigning");
         }
 
         self.remove_keys(transferred_keys).await;
     }
 
-    async fn reassign_secondary_stewardships(self: &Arc<Self>, peer: &KnownPeer) {
+    async fn reassign_secondary_stewardships(self: &Arc<Self>, dead_peer: &KnownPeer) {
+        info!(dead_peer=?dead_peer, "Reassigning any secondary stewardships");
         let secondary_stewardships = self.secondary_stewardships.read().await;
 
-        if let Some(keys) = secondary_stewardships.get(peer) {
+        info!(secstews=?secondary_stewardships, "lock acquired");
+
+        let maybe_keys = (&secondary_stewardships).get(dead_peer).cloned();
+        drop(secondary_stewardships);
+        info!("secstews lock dropped");
+
+        if let Some(keys) = maybe_keys {
+            info!(keys=?keys, "got some keys to transfer stewardship for");
             for key in keys {
                 let value = self
-                    .get_key(key)
+                    .get_key(&key)
                     .await
                     .expect("this key should be here...")
                     .clone();
@@ -138,8 +149,13 @@ impl NodeData {
         }
     }
 
+    #[instrument(skip(self), fields(key=?shorten(&key.as_hex_string()), value =?value))]
     async fn assign_secondary_stewardships(self: Arc<Self>, key: &Hash, value: &String) {
         let peers = self.known_peers.read().await;
+        info!("lock for known peers acquired");
+
+        info!(peers=?peers, "peers when assigning");
+
         let secondary_stewards;
         {
             let mut rng = rand::rngs::ThreadRng::default();
@@ -150,6 +166,8 @@ impl NodeData {
                 // the number of stewards for this value will stay at the same size
                 .choose_multiple(&mut rng, std::cmp::min(REDUNDANCY, peers.len()));
         }
+        drop(peers);
+        info!("lock for known peers dropped");
 
         for steward in secondary_stewards {
             info!(
@@ -162,11 +180,15 @@ impl NodeData {
                 .await
                 .expect("assign failed :(");
             self.store_secondary_stewardship(steward, key).await;
+            // TODO: delete old stewardship
         }
     }
 
     async fn store_secondary_stewardship(&self, steward: KnownPeer, key: &Hash) {
+        info!("storing new secondary stewardship, waiting to acquire lock");
         let mut secondary_stewardships = self.secondary_stewardships.write().await;
+        info!(secstews=?secondary_stewardships, "lock acquired", );
+
         if !secondary_stewardships.contains_key(&steward) {
             let key_set = HashSet::from_iter(iter::once(key.clone()));
             secondary_stewardships.insert(steward, key_set);
@@ -412,7 +434,7 @@ impl PeeringNode for Node {
         }))
     }
 
-    #[instrument(skip(_request), level = "debug")]
+    #[instrument(skip(_request))]
     async fn check_health(
         &self,
         _request: Request<HealthCheckRequest>,

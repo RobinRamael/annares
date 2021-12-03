@@ -14,7 +14,7 @@ use std::time::Instant;
 use tonic::{Request, Status};
 use tracing::{error, instrument};
 
-#[derive(Clone, Hash)]
+#[derive(Clone)]
 pub struct KnownPeer {
     pub addr: SocketAddr,
     pub hash: Hash,
@@ -176,6 +176,12 @@ impl TryFrom<grpc::Peer> for KnownPeer {
 impl PartialEq for KnownPeer {
     fn eq(&self, other: &Self) -> bool {
         self.addr == other.addr
+    }
+}
+
+impl std::hash::Hash for KnownPeer {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.addr.hash(state);
     }
 }
 

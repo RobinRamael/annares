@@ -2,9 +2,11 @@ use generic_array::{ArrayLength, GenericArray};
 use std::cmp;
 use std::ops;
 
+use crate::peering::utils::shorten;
+
 use sha2::{Digest, Sha256};
 
-#[derive(PartialEq, Eq, Debug, Clone, std::hash::Hash)]
+#[derive(PartialEq, Eq, Clone, std::hash::Hash)]
 pub struct Arru8<N: ArrayLength<u8> + Eq> {
     //big endian!
     pub arr: GenericArray<u8, N>,
@@ -63,6 +65,12 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "{}", self.as_hex_string())
+    }
+}
+
+impl std::fmt::Debug for Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "Hash {{ {} }}", shorten(&self.as_hex_string()))
     }
 }
 

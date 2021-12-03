@@ -1,16 +1,18 @@
 
+CHECK_INTERVAL=2
+
 
 function runfirst() {
 
     echo cargo build
     cargo build
-    echo target/debug/node $1 &
-    target/debug/node $1 &
+    echo target/debug/node $1 --check-interval $CHECK_INTERVAL &
+    target/debug/node $1 --check-interval $CHECK_INTERVAL &
 }
 
 function run() {
-    echo target/debug/node $1 --peer "[::1]:$2" 
-    target/debug/node $1 --peer "[::1]:$2" &
+    echo target/debug/node $1 --peer "[::1]:$2" --check-interval $CHECK_INTERVAL
+    target/debug/node $1 --peer "[::1]:$2"  --check-interval $CHECK_INTERVAL &
 }
 
 function runs {
@@ -28,9 +30,8 @@ function runs {
 }
 
 function enter_data {
-    for value in fox bear raccoon giraffe doggo superdoggo monkey bunny plant bertha ruben baby stuff butt superbutt buttstuff farts poopieface schmoopieface
+    for value in fox bear raccoon doggo bertha
     do
-        sleep 2
         client store $value -p :5001
     done
 }
