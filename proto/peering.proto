@@ -75,7 +75,6 @@ message GetStatusRequest {
 }
 
 
-
 message Stewardship {
     string addr = 1;
     repeated string keys = 2;
@@ -83,7 +82,8 @@ message Stewardship {
 
 message GetStatusReply {
   repeated KeyValuePair shard = 1;
-  repeated Stewardship secondaryStewardships = 2;
+  repeated KeyValuePair secondary_shard = 2;
+  repeated Stewardship secondaryStewardships = 3;
 }
 
 message ShutDownRequest {}

@@ -134,16 +134,16 @@ impl ClientAction for GetKeyAction {
     }
 }
 
-struct GetAllAction {}
+struct GetStatusAction {}
 
-impl GetAllAction {
+impl GetStatusAction {
     fn new() -> Self {
         Self {}
     }
 }
 
 #[tonic::async_trait]
-impl ClientAction for GetAllAction {
+impl ClientAction for GetStatusAction {
     type Request = GetStatusRequest;
     type Response = GetStatusReply;
 
@@ -160,21 +160,30 @@ impl ClientAction for GetAllAction {
     }
 
     fn handle_response(&self, response: &Self::Response) {
-        let shard = &response.shard;
-        let sec_stews = &response.secondary_stewardships;
+        let GetStatusReply {
+            shard,
+            secondary_shard,
+            secondary_stewardships,
+        } = &response;
 
-        println!("Data: \n");
+        println!("Primary data:");
 
         for KeyValuePair { key, value } in shard {
             println!("- {}: {}", shorten(key), value);
         }
 
-        println!("\n\nSecondary stewardships: \n");
+        println!("Secondary data:");
 
-        for Stewardship { addr, keys } in sec_stews {
-            println!("{} :", addr);
+        for KeyValuePair { key, value } in secondary_shard {
+            println!("- {}: {}", shorten(key), value);
+        }
+
+        println!("Secondary stewardships:");
+
+        for Stewardship { addr, keys } in secondary_stewardships {
+            print!("{} :", addr);
             for key in keys {
-                println!("    - {}", shorten(key));
+                println!(" {}", shorten(key));
             }
         }
     }
@@ -282,7 +291,7 @@ struct GetKeyArgs {
 }
 
 #[derive(StructOpt, Debug)]
-struct GetAllArgs {
+struct GetStatusArgs {
     #[structopt(flatten)]
     base: BaseCli,
 }
@@ -305,8 +314,8 @@ enum Cli {
     #[structopt(name = "get")]
     GetKey(GetKeyArgs),
 
-    #[structopt(name = "get-all")]
-    GetAll(GetAllArgs),
+    #[structopt(name = "status")]
+    GetStatus(GetStatusArgs),
 
     #[structopt(name = "shutdown")]
     ShutDown(ShutDownArgs),
@@ -327,12 +336,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let client = connect(&cfg.base.peer).await;
             GetKeyAction::new(cfg.key).perform(client).await;
         }
-        Cli::GetAll(cfg) => {
+        Cli::GetStatus(cfg) => {
             let client = connect(&cfg.base.peer).await;
-            println!("");
             println!("Connected to {}", &cfg.base.peer);
             println!("");
-            GetAllAction::new().perform(client).await;
+            GetStatusAction::new().perform(client).await;
         }
         Cli::ShutDown(cfg) => {
             let client = connect(&cfg.base.peer).await;

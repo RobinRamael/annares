@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
-use tracing::{debug, error, info, instrument, span, Level};
+use tracing::{debug, error, info, instrument, span, warn, Level};
 
 const REDUNDANCY: usize = 1;
 
@@ -34,7 +34,8 @@ pub struct NodeData {
     pub hash: Hash,
     pub known_peers: Arc<RwLock<HashMap<SocketAddr, KnownPeer>>>,
     pub data_shard: Arc<RwLock<HashMap<Hash, String>>>,
-    pub secondary_stewardships: Arc<RwLock<HashMap<KnownPeer, HashSet<Hash>>>>,
+    pub secondary_shard: Arc<RwLock<HashMap<Hash, String>>>,
+    pub secondary_stewards: Arc<RwLock<HashMap<KnownPeer, HashSet<Hash>>>>,
 }
 
 impl NodeData {
@@ -47,7 +48,8 @@ impl NodeData {
             hash: Hash::hash(&addr.to_string()),
             known_peers: Arc::new(RwLock::new(peer_map)),
             data_shard: Arc::new(RwLock::new(HashMap::new())),
-            secondary_stewardships: Arc::new(RwLock::new(HashMap::new())),
+            secondary_shard: Arc::new(RwLock::new(HashMap::new())),
+            secondary_stewards: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -58,7 +60,30 @@ impl NodeData {
         peers.remove(&peer.addr);
         info!(peers=?peers, "peers after purge");
         drop(peers);
-        self.reassign_secondary_stewardships(&peer).await;
+        self.reassign_secondary_stewards(&peer).await;
+        // FIXME: this sends everything, not just the primary data we just lost in the purged
+        // node...
+        self.store_secondary_elsewhere().await;
+    }
+
+    async fn store_secondary_elsewhere(&self) {
+        let mut secondary_shard = self.secondary_shard.write().await;
+
+        if let Some(healthiest_peer) = self.last_seen_peer().await {
+            for (key, value) in secondary_shard.clone().iter() {
+                match healthiest_peer.store(key, value, false).await {
+                    Ok(_) => {
+                        secondary_shard.remove(key);
+                    }
+                    Err(err) => {
+                        error!("Failed to renew secondary: {}", err);
+                        return;
+                    }
+                }
+            }
+        } else {
+            warn!("Cant store secondary elsewhere because I'm all alone")
+        }
     }
 
     async fn mark_healthy(&self, peer: &KnownPeer) {
@@ -112,7 +137,6 @@ impl NodeData {
     }
 
     async fn stewardship_reassignment(self: &Arc<Self>, peer: &KnownPeer) {
-        // let self_clone = self.clone();
         let to_transfer = self.reasses_stewardship_for(&peer).await;
         let transferred_keys = peer.transfer_stewardship(to_transfer).await.unwrap();
 
@@ -123,14 +147,14 @@ impl NodeData {
         self.remove_keys(transferred_keys).await;
     }
 
-    async fn reassign_secondary_stewardships(self: &Arc<Self>, dead_peer: &KnownPeer) {
+    async fn reassign_secondary_stewards(self: &Arc<Self>, dead_peer: &KnownPeer) {
         info!(dead_peer=?dead_peer, "Reassigning any secondary stewardships");
-        let secondary_stewardships = self.secondary_stewardships.read().await;
+        let secondary_stewards = self.secondary_stewards.read().await;
 
-        info!(secstews=?secondary_stewardships, "lock acquired");
+        info!(secstews=?secondary_stewards, "lock acquired");
 
-        let maybe_keys = (&secondary_stewardships).get(dead_peer).cloned();
-        drop(secondary_stewardships);
+        let maybe_keys = (&secondary_stewards).get(dead_peer).cloned();
+        drop(secondary_stewards);
         info!("secstews lock dropped");
 
         if let Some(keys) = maybe_keys {
@@ -142,15 +166,15 @@ impl NodeData {
                     .expect("this key should be here...")
                     .clone();
 
-                self.clone()
-                    .assign_secondary_stewardships(&key, &value)
-                    .await;
+                self.clone().assign_secondary_stewards(&key, &value).await;
+
+                self.remove_dead_steward(dead_peer).await;
             }
         }
     }
 
     #[instrument(skip(self), fields(key=?shorten(&key.as_hex_string()), value =?value))]
-    async fn assign_secondary_stewardships(self: Arc<Self>, key: &Hash, value: &String) {
+    async fn assign_secondary_stewards(self: Arc<Self>, key: &Hash, value: &String) {
         let peers = self.known_peers.read().await;
         info!("lock for known peers acquired");
 
@@ -186,25 +210,43 @@ impl NodeData {
 
     async fn store_secondary_stewardship(&self, steward: KnownPeer, key: &Hash) {
         info!("storing new secondary stewardship, waiting to acquire lock");
-        let mut secondary_stewardships = self.secondary_stewardships.write().await;
-        info!(secstews=?secondary_stewardships, "lock acquired", );
+        let mut secondary_stewards = self.secondary_stewards.write().await;
+        info!(secstews=?secondary_stewards, "lock acquired", );
 
-        if !secondary_stewardships.contains_key(&steward) {
+        if !secondary_stewards.contains_key(&steward) {
             let key_set = HashSet::from_iter(iter::once(key.clone()));
-            secondary_stewardships.insert(steward, key_set);
+            secondary_stewards.insert(steward, key_set);
         } else {
-            secondary_stewardships
+            secondary_stewards
                 .get_mut(&steward)
                 .unwrap()
                 .insert(key.clone());
         }
     }
 
+    async fn remove_dead_steward(&self, steward: &KnownPeer) {
+        info!("storing new secondary stewardship, waiting to acquire lock");
+        let mut secondary_stewards = self.secondary_stewards.write().await;
+        info!(secstews=?secondary_stewards, "lock acquired", );
+
+        secondary_stewards.remove(&steward);
+
+        info!(secstews=?secondary_stewards, "lock dropped", );
+    }
+
     async fn stalest_peer(&self) -> Option<KnownPeer> {
-        let peers = self.known_peers.read();
+        let peers = self.known_peers.read().await;
 
         peers
-            .await
+            .values()
+            .cloned()
+            .max_by_key(|p| Instant::now() - p.last_contact)
+    }
+
+    async fn last_seen_peer(&self) -> Option<KnownPeer> {
+        let peers = self.known_peers.read().await;
+
+        peers
             .values()
             .cloned()
             .max_by_key(|p| Instant::now() - p.last_contact)
@@ -215,6 +257,7 @@ impl NodeData {
 
         data_shard
             .into_iter()
+            // .filter()
             .filter(|(key, _val)| peer.distance_to(key) < self.distance_to(key))
             .collect()
     }
@@ -245,6 +288,12 @@ impl NodeData {
         let mut data_shard = self.data_shard.write().await;
         data_shard.insert(key.clone(), value.clone());
         Ok(self.addr)
+    }
+
+    pub async fn secondary_store(&self, key: &Hash, value: &String) {
+        info!("storing {} here as secondary", value);
+        let mut secondary_shard = self.secondary_shard.write().await;
+        secondary_shard.insert(key.clone(), value.clone());
     }
 
     pub fn distance_to(&self, key: &Hash) -> Hash {
@@ -405,7 +454,8 @@ impl PeeringNode for Node {
 
         if as_secondary {
             info!("secondary store rcvd for {}", value = value);
-            addr = self.data.store(&key, &value).await?;
+            self.data.secondary_store(&key, &value).await;
+            addr = self.data.addr;
         } else {
             info!("primary store rcvd for {}", value = value);
             addr = match self.get_nearest(&key).await {
@@ -421,7 +471,7 @@ impl PeeringNode for Node {
                     let self_clone = Arc::clone(&self.data);
                     tokio::spawn(async move {
                         self_clone
-                            .assign_secondary_stewardships(&key_clone, &value_clone)
+                            .assign_secondary_stewards(&key_clone, &value_clone)
                             .await;
                     });
                     my_addr
@@ -505,10 +555,19 @@ impl PeeringNode for Node {
     ) -> Result<Response<GetStatusReply>, Status> {
         debug!("received get data shard");
         let shard = self.data.data_shard.read().await;
-        let sec_stewardships = self.data.secondary_stewardships.read().await;
+        let secondary_shard = self.data.secondary_shard.read().await;
+        let sec_stewardships = self.data.secondary_stewards.read().await;
 
         Ok(Response::new(GetStatusReply {
             shard: shard
+                .clone()
+                .into_iter()
+                .map(|(key, value)| KeyValuePair {
+                    key: key.as_hex_string(),
+                    value,
+                })
+                .collect(),
+            secondary_shard: secondary_shard
                 .clone()
                 .into_iter()
                 .map(|(key, value)| KeyValuePair {

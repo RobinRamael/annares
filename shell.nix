@@ -1,6 +1,6 @@
 let
   # Last updated: 2/26/21. Update as necessary from https://status.nixos.org/...
-  pkgs = import (fetchTarball("https://github.com/NixOS/nixpkgs/archive/320197ed13c4914b4d70e158c6a72e3ac1378243.tar.gz")) {};
+  pkgs = import (fetchTarball("https://github.com/NixOS/nixpkgs/archive/660a7744c6557667366db5874742891aa1548620.tar.gz")) {};
 
   # Rolling updates, not deterministic.
   # pkgs = import (fetchTarball("channel:nixpkgs-unstable")) {};

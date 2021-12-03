@@ -47,6 +47,6 @@ function monitor {
     ((last_port = 5000 + $1))
     for port in {5001..$last_port}; do
         echo launching monitor for $port
-        kitty watch client get-all -p "[::1]:$port" &
+        kitty watch client status -p "[::1]:$port" &
     done
 }
