@@ -1,22 +1,28 @@
 
 
 function runfirst() {
+
+    echo cargo build
     cargo build
+    echo target/debug/node $1 &
     target/debug/node $1 &
 }
 
 function run() {
+    echo target/debug/node $1 --peer "[::1]:$2" 
     target/debug/node $1 --peer "[::1]:$2" &
 }
 
 function runs {
     echo killing all nodes
     pkill node
-    runfirst 5001; 
+    runfirst 5001;
+    echo 5001
     ((last_port = 5000 + $1 - 1))
     for peer in {5001..$last_port}; do
         ((port = $peer + 1));
         sleep 1;
+        echo $port $peer
         run $port $peer &;
     done
 }

@@ -4,32 +4,28 @@ use crate::peering::grpc;
 use crate::peering::grpc::peering_node_client::PeeringNodeClient;
 use crate::peering::grpc::peering_node_server::PeeringNode;
 use crate::peering::grpc::{
-    GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, HealthCheckReply,
+    GetKeyReply, GetKeyRequest, GetStatusReply, GetStatusRequest, HealthCheckReply,
     HealthCheckRequest, IntroductionReply, IntroductionRequest, KeyValuePair, ListPeersReply,
-    ListPeersRequest, ShutDownReply, ShutDownRequest, StoreReply, StoreRequest, TransferReply,
-    TransferRequest,
+    ListPeersRequest, ShutDownReply, ShutDownRequest, Stewardship, StoreReply, StoreRequest,
+    TransferReply, TransferRequest,
 };
 use crate::peering::hash::Hash;
 use crate::peering::peer::KnownPeer;
 use crate::peering::utils;
 use std::iter;
 
-use std::collections::HashMap;
+use rand::seq::IteratorRandom;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
 use tracing::{debug, error, info, instrument};
 
-#[tonic::async_trait]
-pub trait GetStore {
-    async fn get_key(&self, key: &Hash) -> Result<String, Status>;
-    async fn store(&self, key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status>;
-
-    fn distance_to(&self, key: &Hash) -> Hash;
-}
+const REDUNDANCY: usize = 1;
 
 #[derive(Debug)]
 pub struct NodeData {
@@ -37,6 +33,7 @@ pub struct NodeData {
     pub hash: Hash,
     pub known_peers: Arc<RwLock<HashMap<SocketAddr, KnownPeer>>>,
     pub data_shard: Arc<RwLock<HashMap<Hash, String>>>,
+    pub secondary_stewardships: Arc<RwLock<HashMap<KnownPeer, HashSet<Hash>>>>,
 }
 
 impl NodeData {
@@ -49,19 +46,20 @@ impl NodeData {
             hash: Hash::hash(&addr.to_string()),
             known_peers: Arc::new(RwLock::new(peer_map)),
             data_shard: Arc::new(RwLock::new(HashMap::new())),
+            secondary_stewardships: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    fn purge(&self, peer: &KnownPeer) {
+    async fn purge(&self, peer: &KnownPeer) {
         // println!("Purging {}", peer);
         info!("purging {}", peer = &peer);
-        let mut peers = self.known_peers.write().unwrap();
+        let mut peers = self.known_peers.write().await;
         assert!(peers.contains_key(&peer.addr));
         peers.remove(&peer.addr);
     }
 
-    fn mark_healthy(&self, peer: &KnownPeer) {
-        let mut locked_peers = self.known_peers.write().unwrap();
+    async fn mark_healthy(&self, peer: &KnownPeer) {
+        let mut locked_peers = self.known_peers.write().await;
         let healthy_peer = locked_peers.get_mut(&peer.addr).unwrap();
 
         healthy_peer.last_contact = Instant::now();
@@ -80,7 +78,7 @@ impl NodeData {
             loop {
                 interval.tick().await;
 
-                if let Some(peer) = data.stalest_peer() {
+                if let Some(peer) = data.stalest_peer().await {
                     match PeeringNodeClient::connect(utils::build_grpc_url(&peer.addr))
                         .await
                         .as_mut()
@@ -90,16 +88,18 @@ impl NodeData {
                                 .check_health(Request::new(HealthCheckRequest {}))
                                 .await
                             {
-                                Ok(_) => data.mark_healthy(&peer),
+                                Ok(_) => data.mark_healthy(&peer).await,
                                 Err(err) => {
                                     error!("Request failed: {}", err = err);
-                                    data.purge(&peer);
+                                    data.purge(&peer).await;
+                                    self.clone().reassign_secondary_stewardships(&peer).await;
                                 }
                             }
                         }
                         Err(err) => {
                             error!("connection failed: {}", err = err);
-                            data.purge(&peer);
+                            data.purge(&peer).await;
+                            self.clone().reassign_secondary_stewardships(&peer).await;
                         }
                     };
                 }
@@ -110,28 +110,86 @@ impl NodeData {
 
     async fn stewardship_reassignment(self: &Arc<Self>, peer: &KnownPeer) {
         // let self_clone = self.clone();
-        let to_transfer = self.reasses_stewardship_for(&peer);
-        let transferred_keys = peer.assign_stewardship(to_transfer).await.unwrap();
+        let to_transfer = self.reasses_stewardship_for(&peer).await;
+        let transferred_keys = peer.transfer_stewardship(to_transfer).await.unwrap();
 
         for key in &transferred_keys {
             info!(key=?key.as_hex_string(), peer=?&peer, "Reassigning");
         }
 
-        self.remove_keys(transferred_keys);
+        self.remove_keys(transferred_keys).await;
     }
 
-    fn stalest_peer(&self) -> Option<KnownPeer> {
+    async fn reassign_secondary_stewardships(self: &Arc<Self>, peer: &KnownPeer) {
+        let secondary_stewardships = self.secondary_stewardships.read().await;
+
+        if let Some(keys) = secondary_stewardships.get(peer) {
+            for key in keys {
+                let value = self
+                    .get_key(key)
+                    .await
+                    .expect("this key should be here...")
+                    .clone();
+
+                self.clone()
+                    .assign_secondary_stewardships(&key, &value)
+                    .await;
+            }
+        }
+    }
+
+    async fn assign_secondary_stewardships(self: Arc<Self>, key: &Hash, value: &String) {
+        let peers = self.known_peers.read().await;
+        let secondary_stewards;
+        {
+            let mut rng = rand::rngs::ThreadRng::default();
+            secondary_stewards = peers
+                .values()
+                .cloned()
+                // FIXME: this min here means that when the network is smaller than REDUNDANCY,
+                // the number of stewards for this value will stay at the same size
+                .choose_multiple(&mut rng, std::cmp::min(REDUNDANCY, peers.len()));
+        }
+
+        for steward in secondary_stewards {
+            info!(
+                "assigning secondary stewardship: {}, {}",
+                peer = steward,
+                value = value
+            );
+            steward
+                .assign_secondary_stewardship(key, value)
+                .await
+                .expect("assign failed :(");
+            self.store_secondary_stewardship(steward, key).await;
+        }
+    }
+
+    async fn store_secondary_stewardship(&self, steward: KnownPeer, key: &Hash) {
+        let mut secondary_stewardships = self.secondary_stewardships.write().await;
+        if !secondary_stewardships.contains_key(&steward) {
+            let key_set = HashSet::from_iter(iter::once(key.clone()));
+            secondary_stewardships.insert(steward, key_set);
+        } else {
+            secondary_stewardships
+                .get_mut(&steward)
+                .unwrap()
+                .insert(key.clone());
+        }
+    }
+
+    async fn stalest_peer(&self) -> Option<KnownPeer> {
         let peers = self.known_peers.read();
 
         peers
-            .unwrap()
+            .await
             .values()
             .cloned()
             .max_by_key(|p| Instant::now() - p.last_contact)
     }
 
-    fn reasses_stewardship_for(&self, peer: &KnownPeer) -> Vec<(Hash, String)> {
-        let data_shard = self.data_shard.read().unwrap().clone();
+    async fn reasses_stewardship_for(&self, peer: &KnownPeer) -> Vec<(Hash, String)> {
+        let data_shard = self.data_shard.read().await.clone();
 
         data_shard
             .into_iter()
@@ -139,20 +197,17 @@ impl NodeData {
             .collect()
     }
 
-    fn remove_keys(&self, keys: Vec<Hash>) {
-        let mut data_shard = self.data_shard.write().unwrap();
+    async fn remove_keys(&self, keys: Vec<Hash>) {
+        let mut data_shard = self.data_shard.write().await;
 
         for key in keys {
             // println!("deleting {}", &key);
             data_shard.remove(&key);
         }
     }
-}
 
-#[tonic::async_trait]
-impl GetStore for NodeData {
     async fn get_key(&self, key: &Hash) -> Result<String, Status> {
-        let data_shard = self.data_shard.read().unwrap();
+        let data_shard = self.data_shard.read().await;
 
         match data_shard.get(key).cloned() {
             Some(value) => Ok(value),
@@ -163,13 +218,14 @@ impl GetStore for NodeData {
         }
     }
 
-    async fn store(&self, key: &Hash, value: String, _hops: u32) -> Result<SocketAddr, Status> {
-        let mut data_shard = self.data_shard.write().unwrap();
-        data_shard.insert(key.clone(), value);
+    pub async fn store(&self, key: &Hash, value: &String) -> Result<SocketAddr, Status> {
+        info!("storing {} here", value);
+        let mut data_shard = self.data_shard.write().await;
+        data_shard.insert(key.clone(), value.clone());
         Ok(self.addr)
     }
 
-    fn distance_to(&self, key: &Hash) -> Hash {
+    pub fn distance_to(&self, key: &Hash) -> Hash {
         self.hash.cyclic_distance(key)
     }
 }
@@ -185,7 +241,7 @@ impl Node {
     }
 
     pub async fn mingle(&self) -> Result<(), tonic::transport::Error> {
-        let mut locked_peers = self.data.known_peers.write().unwrap();
+        let mut locked_peers = self.data.known_peers.write().await;
 
         let mut all_new_peers = Vec::new();
 
@@ -232,26 +288,24 @@ impl Node {
         Ok(new_peers)
     }
 
-    fn get_nearest(&self, hash: &Hash) -> Arc<dyn GetStore + Send + Sync> {
-        let this_node = self.data.clone();
-        let peers = self.data.known_peers.read();
+    async fn get_nearest(&self, key: &Hash) -> Option<KnownPeer> {
+        let peers = self.data.known_peers.read().await;
 
-        peers
-            .unwrap()
+        let nearest_peer = peers
             .values()
             .cloned()
-            .map(|p| Arc::new(p) as Arc<dyn GetStore + Send + Sync>)
-            .chain(iter::once(this_node as Arc<dyn GetStore + Send + Sync>))
-            .min_by_key(|peer| peer.distance_to(hash))
-            .unwrap() // we can unwrap here because we're sure the iterator has at least self in it
-    }
+            .min_by_key(|peer| peer.distance_to(key));
 
-    async fn spawn_stewardship_reassignment(self: &Arc<Self>, peer: KnownPeer) {
-        let data = Arc::clone(&self.data);
-
-        tokio::task::spawn(async move {
-            data.stewardship_reassignment(&peer).await;
-        });
+        match nearest_peer {
+            Some(peer) => {
+                if self.data.distance_to(key) > peer.distance_to(key) {
+                    Some(peer)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
     }
 }
 
@@ -266,7 +320,7 @@ impl PeeringNode for Node {
 
         // println!("received introduction from {:?}", new_peer_addr);
 
-        let mut locked_peers = self.data.known_peers.write().unwrap();
+        let mut locked_peers = self.data.known_peers.write().await;
 
         let known_peers = locked_peers
             .values()
@@ -305,27 +359,55 @@ impl PeeringNode for Node {
         request: Request<GetKeyRequest>,
     ) -> Result<Response<GetKeyReply>, Status> {
         let GetKeyRequest { key, .. } = request.into_inner();
-        info!("hello?");
 
         let hash: Hash = Hash::try_from(key).unwrap();
 
-        let value = self.get_nearest(&hash).get_key(&hash).await?;
+        let value = match self.get_nearest(&hash).await {
+            Some(nearest) => nearest.get_key(&hash).await?,
+            None => self.data.get_key(&hash).await?,
+        };
 
         Ok(Response::new(GetKeyReply { value }))
     }
 
     #[instrument(skip(request), fields(value=?request.get_ref().value))]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
-        let StoreRequest { value, hops, .. } = request.into_inner();
+        let StoreRequest {
+            value,
+            as_secondary,
+            ..
+        } = request.into_inner();
 
-        info!("received store {}", value = value);
+        let key = Hash::hash(&value);
+        let addr;
 
-        let hash = Hash::hash(&value);
+        if as_secondary {
+            info!("secondary store rcvd for {}", value = value);
+            addr = self.data.store(&key, &value).await?;
+        } else {
+            info!("primary store rcvd for {}", value = value);
+            addr = match self.get_nearest(&key).await {
+                Some(nearest) => {
+                    info!("nearest for {} is {}", key, nearest);
+                    nearest.store(&key, &value, false).await?
+                }
+                None => {
+                    let my_addr = self.data.store(&key, &value).await?;
 
-        let addr = self.get_nearest(&hash).store(&hash, value, hops).await?;
-
+                    let key_clone = key.clone();
+                    let value_clone = value.clone();
+                    let self_clone = Arc::clone(&self.data);
+                    tokio::spawn(async move {
+                        self_clone
+                            .assign_secondary_stewardships(&key_clone, &value_clone)
+                            .await;
+                    });
+                    my_addr
+                }
+            };
+        }
         Ok(Response::new(StoreReply {
-            key: hash.as_hex_string(),
+            key: key.as_hex_string(),
             stored_in: addr.to_string(),
         }))
     }
@@ -357,7 +439,7 @@ impl PeeringNode for Node {
     ) -> Result<Response<TransferReply>, Status> {
         let TransferRequest { to_store, .. } = request.into_inner();
 
-        let mut data_shard = self.data.data_shard.write().unwrap();
+        let mut data_shard = self.data.data_shard.write().await;
 
         let transferred_keys: Vec<String> = to_store
             .into_iter()
@@ -382,7 +464,7 @@ impl PeeringNode for Node {
         _request: Request<ListPeersRequest>,
     ) -> Result<Response<ListPeersReply>, Status> {
         info!("received list peers");
-        let locked_peers = self.data.known_peers.read().unwrap().clone();
+        let locked_peers = self.data.known_peers.read().await.clone();
 
         let peers: Vec<_> = locked_peers
             .values()
@@ -395,20 +477,29 @@ impl PeeringNode for Node {
     }
 
     #[instrument(skip(_request))]
-    async fn get_data_shard(
+    async fn get_status(
         &self,
-        _request: Request<GetDataShardRequest>,
-    ) -> Result<Response<GetDataShardReply>, Status> {
+        _request: Request<GetStatusRequest>,
+    ) -> Result<Response<GetStatusReply>, Status> {
         debug!("received get data shard");
-        let shard = self.data.data_shard.read().unwrap();
+        let shard = self.data.data_shard.read().await;
+        let sec_stewardships = self.data.secondary_stewardships.read().await;
 
-        Ok(Response::new(GetDataShardReply {
+        Ok(Response::new(GetStatusReply {
             shard: shard
                 .clone()
                 .into_iter()
                 .map(|(key, value)| KeyValuePair {
                     key: key.as_hex_string(),
                     value,
+                })
+                .collect(),
+            secondary_stewardships: sec_stewardships
+                .clone()
+                .into_iter()
+                .map(|(peer, keys)| Stewardship {
+                    addr: peer.addr.to_string(),
+                    keys: keys.iter().cloned().map(|k| k.as_hex_string()).collect(),
                 })
                 .collect(),
         }))

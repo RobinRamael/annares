@@ -5,7 +5,6 @@ use crate::peering::grpc::{
     TransferRequest,
 };
 use crate::peering::hash::Hash;
-use crate::peering::node::GetStore;
 use crate::peering::utils;
 
 use std::fmt::Debug;
@@ -13,9 +12,9 @@ use std::fmt::Display;
 use std::net::SocketAddr;
 use std::time::Instant;
 use tonic::{Request, Status};
-use tracing::error;
+use tracing::{error, instrument};
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(Clone, Hash)]
 pub struct KnownPeer {
     pub addr: SocketAddr,
     pub hash: Hash,
@@ -48,25 +47,27 @@ impl KnownPeer {
         }
     }
 
-    pub async fn assign_stewardship(
+    pub async fn transfer_stewardship(
         &self,
         kv_pairs: Vec<(Hash, String)>,
     ) -> Result<Vec<Hash>, tonic::transport::Error> {
         match self.connect().await {
             Ok(mut client) => {
+                let request = Request::new(TransferRequest {
+                    to_store: kv_pairs
+                        .into_iter()
+                        .map(|kv| {
+                            let (key, value) = kv;
+                            KeyValuePair {
+                                key: key.as_hex_string(),
+                                value,
+                            }
+                        })
+                        .collect(),
+                });
+
                 let keys_transferred = client
-                    .transfer(Request::new(TransferRequest {
-                        to_store: kv_pairs
-                            .into_iter()
-                            .map(|kv| {
-                                let (key, value) = kv;
-                                KeyValuePair {
-                                    key: key.as_hex_string(),
-                                    value,
-                                }
-                            })
-                            .collect(),
-                    }))
+                    .transfer(request)
                     .await
                     .map(|response| {
                         let TransferReply { transferred_keys } = response.get_ref();
@@ -77,16 +78,14 @@ impl KnownPeer {
                             .collect()
                     })
                     .unwrap();
+
                 Ok(keys_transferred)
             }
             Err(err) => Err(err),
         }
     }
-}
 
-#[tonic::async_trait]
-impl GetStore for KnownPeer {
-    async fn get_key(&self, key: &Hash) -> Result<String, Status> {
+    pub async fn get_key(&self, key: &Hash) -> Result<String, Status> {
         match self.connect().await {
             Ok(mut client) => {
                 // let mut c = client;
@@ -106,13 +105,19 @@ impl GetStore for KnownPeer {
         }
     }
 
-    async fn store(&self, _key: &Hash, value: String, hops: u32) -> Result<SocketAddr, Status> {
+    #[instrument(skip(self))]
+    pub async fn store(
+        &self,
+        _key: &Hash,
+        value: &String,
+        as_secondary: bool,
+    ) -> Result<SocketAddr, Status> {
         match self.connect().await {
             Ok(mut client) => {
                 // let mut c = client;
                 let request = Request::new(StoreRequest {
-                    value,
-                    hops: hops + 1,
+                    value: value.clone(),
+                    as_secondary,
                 });
 
                 match client.store(request).await {
@@ -127,7 +132,18 @@ impl GetStore for KnownPeer {
         }
     }
 
-    fn distance_to(&self, key: &Hash) -> Hash {
+    pub async fn assign_secondary_stewardship(
+        &self,
+        key: &Hash,
+        value: &String,
+    ) -> Result<(), Status> {
+        match self.store(key, value, true).await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn distance_to(&self, key: &Hash) -> Hash {
         self.hash.cyclic_distance(key)
     }
 }
@@ -156,6 +172,14 @@ impl TryFrom<grpc::Peer> for KnownPeer {
         Ok(KnownPeer::new(addr))
     }
 }
+
+impl PartialEq for KnownPeer {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr
+    }
+}
+
+impl Eq for KnownPeer {}
 
 impl Debug for KnownPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

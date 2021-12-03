@@ -10,7 +10,7 @@ service PeeringNode {
   rpc transfer (TransferRequest) returns (TransferReply);
 
   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
-  rpc getDataShard (GetDataShardRequest) returns (GetDataShardReply);
+  rpc getStatus (GetStatusRequest) returns (GetStatusReply);
 
   rpc shutDown (ShutDownRequest) returns (ShutDownReply);
 }
@@ -41,7 +41,7 @@ message HealthCheckReply { }
 
 message StoreRequest {
   string value = 1;
-  uint32 hops = 2;
+  bool asSecondary = 3;
 }
 
 message StoreReply {
@@ -71,11 +71,19 @@ message TransferReply {
 }
 
 
-message GetDataShardRequest {
+message GetStatusRequest {
 }
 
-message GetDataShardReply {
+
+
+message Stewardship {
+    string addr = 1;
+    repeated string keys = 2;
+}
+
+message GetStatusReply {
   repeated KeyValuePair shard = 1;
+  repeated Stewardship secondaryStewardships = 2;
 }
 
 message ShutDownRequest {}

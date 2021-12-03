@@ -1,11 +1,11 @@
 mod peering;
 use peering::grpc::peering_node_client::PeeringNodeClient;
 use peering::grpc::{
-    GetDataShardReply, GetDataShardRequest, GetKeyReply, GetKeyRequest, KeyValuePair,
-    ListPeersReply, ListPeersRequest, ShutDownReply, ShutDownRequest, StoreReply, StoreRequest,
+    GetKeyReply, GetKeyRequest, GetStatusReply, GetStatusRequest, KeyValuePair, ListPeersReply,
+    ListPeersRequest, ShutDownReply, ShutDownRequest, Stewardship, StoreReply, StoreRequest,
 };
 use peering::peer::KnownPeer;
-use peering::utils::build_grpc_url;
+use peering::utils::{build_grpc_url, shorten};
 
 use std::net::{AddrParseError, SocketAddr};
 use structopt::StructOpt;
@@ -144,8 +144,8 @@ impl GetAllAction {
 
 #[tonic::async_trait]
 impl ClientAction for GetAllAction {
-    type Request = GetDataShardRequest;
-    type Response = GetDataShardReply;
+    type Request = GetStatusRequest;
+    type Response = GetStatusReply;
 
     fn build_request(&self) -> Self::Request {
         Self::Request {}
@@ -156,13 +156,26 @@ impl ClientAction for GetAllAction {
         mut client: PeeringNodeClient<tonic::transport::Channel>,
         request: tonic::Request<Self::Request>,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        client.get_data_shard(request).await
+        client.get_status(request).await
     }
 
     fn handle_response(&self, response: &Self::Response) {
-        // println!("\nPeer {}:\n", peer);
-        for KeyValuePair { key: _, value } in &response.shard {
-            println!("- {}", value);
+        let shard = &response.shard;
+        let sec_stews = &response.secondary_stewardships;
+
+        println!("Data: \n");
+
+        for KeyValuePair { key, value } in shard {
+            println!("- {}: {}", shorten(key), value);
+        }
+
+        println!("\n\nSecondary stewardships: \n");
+
+        for Stewardship { addr, keys } in sec_stews {
+            println!("{} :", addr);
+            for key in keys {
+                println!("    - {}", shorten(key));
+            }
         }
     }
 }
@@ -213,7 +226,7 @@ impl ClientAction for StoreValueAction {
     fn build_request(&self) -> Self::Request {
         Self::Request {
             value: self.value.clone(),
-            hops: 0,
+            as_secondary: false,
         }
     }
 
@@ -316,6 +329,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cli::GetAll(cfg) => {
             let client = connect(&cfg.base.peer).await;
+            println!("");
+            println!("Connected to {}", &cfg.base.peer);
+            println!("");
             GetAllAction::new().perform(client).await;
         }
         Cli::ShutDown(cfg) => {
