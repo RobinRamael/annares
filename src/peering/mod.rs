@@ -1,5 +1,6 @@
-pub mod grpc;
-pub mod hash;
-pub mod node;
-pub mod peer;
+mod errors;
+mod grpc;
+mod hash;
+pub mod service;
+pub mod this_node;
 pub mod utils;

@@ -1,37 +1,49 @@
 syntax = "proto3";
 package peering;
 
-service PeeringNode {
-  rpc Introduce (IntroductionRequest) returns (IntroductionReply);
-  rpc ListPeers (ListPeersRequest) returns (ListPeersReply);
+/* service PeeringNode { */
+/*   rpc Introduce (IntroductionRequest) returns (IntroductionReply); */
 
-  rpc getKey (GetKeyRequest) returns (GetKeyReply);
+/*   rpc getKey (GetKeyRequest) returns (GetKeyReply); */
+/*   rpc store (StoreRequest) returns (StoreReply); */
+/*   rpc transfer (TransferRequest) returns (TransferReply); */
+/*   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply); */
+
+/*   rpc getStatus (GetStatusRequest) returns (GetStatusReply); */
+/*   rpc ListPeers (ListPeersRequest) returns (ListPeersReply); */
+
+/*   rpc shutDown (ShutDownRequest) returns (ShutDownReply); */
+/* } */
+
+service NodeService {
+  rpc introduce (IntroductionRequest) returns (IntroductionReply);
+  rpc get (GetRequest) returns (GetReply);
   rpc store (StoreRequest) returns (StoreReply);
-  rpc transfer (TransferRequest) returns (TransferReply);
-
+  rpc storeSecondary (SecondaryStoreRequest) returns (SecondaryStoreReply);
   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
-  rpc getStatus (GetStatusRequest) returns (GetStatusReply);
 
+  rpc getStatus (GetStatusRequest) returns (GetStatusReply);
+  /* rpc ListPeers (ListPeersRequest) returns (ListPeersReply); */
   rpc shutDown (ShutDownRequest) returns (ShutDownReply);
 }
 
 message IntroductionRequest {
-  string senderAdress = 1;
+  string senderAddr = 1;
 }
 
 message IntroductionReply {
-  repeated Peer knownPeers = 1;
+  repeated KnownPeer knownPeers = 1;
+  repeated string data = 2;
 }
 
 message ListPeersRequest {}
 
-message Peer {
+message KnownPeer {
   string addr = 1;
-  string hash = 2;
 }
 
 message ListPeersReply {
-  repeated Peer knownPeers = 1;
+  repeated KnownPeer knownPeers = 1;
 }
 
 message HealthCheckRequest { }
@@ -41,7 +53,6 @@ message HealthCheckReply { }
 
 message StoreRequest {
   string value = 1;
-  bool asSecondary = 3;
 }
 
 message StoreReply {
@@ -49,11 +60,19 @@ message StoreReply {
   string storedIn = 2;
 }
 
-message GetKeyRequest {
+message SecondaryStoreRequest {
+  string value = 1;
+  string primary_holder = 2;
+}
+
+message SecondaryStoreReply {
+}
+
+message GetRequest {
   string key = 1;
 }
 
-message GetKeyReply {
+message GetReply {
   string value = 1;
 }
 
@@ -75,15 +94,20 @@ message GetStatusRequest {
 }
 
 
-message Stewardship {
+message Secondant {
     string addr = 1;
-    repeated string keys = 2;
+    string key = 2;
+}
+
+message SecondaryStoreEntry {
+  string addr = 1;
+  repeated KeyValuePair entries = 2;
 }
 
 message GetStatusReply {
-  repeated KeyValuePair shard = 1;
-  repeated KeyValuePair secondary_shard = 2;
-  repeated Stewardship secondaryStewardships = 3;
+  repeated KeyValuePair primary_store = 1;
+  repeated SecondaryStoreEntry secondary_store = 2;
+  repeated Secondant secondants = 3;
 }
 
 message ShutDownRequest {}

@@ -13,6 +13,7 @@ pub struct Arru8<N: ArrayLength<u8> + Eq> {
 }
 
 pub type Hash = Arru8<<Sha256 as Digest>::OutputSize>;
+pub type Key = Hash;
 
 impl Hash {
     pub fn hash(s: &String) -> Self {
@@ -371,5 +372,11 @@ mod tests {
             let hex_s = h1.as_hex_string();
             h1 == hex_s.try_into().unwrap()
         }
+    }
+}
+
+impl Into<String> for Key {
+    fn into(self) -> String {
+        self.as_hex_string()
     }
 }
