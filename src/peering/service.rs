@@ -110,18 +110,18 @@ impl NodeService for ThisNodeService {
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
         }
     }
-    #[instrument(skip(request))]
+    #[instrument(skip(_request))]
     async fn check_health(
         &self,
-        request: Request<HealthCheckRequest>,
+        _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckReply>, Status> {
         Ok(Response::new(HealthCheckReply {}))
     }
 
-    #[instrument(skip(request))]
+    #[instrument(skip(_request))]
     async fn get_status(
         &self,
-        request: Request<GetStatusRequest>,
+        _request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusReply>, Status> {
         let primary_store = self.node.primary_store.read().await;
         let secondary_store = self.node.secondary_store.read().await;
@@ -141,10 +141,10 @@ impl NodeService for ThisNodeService {
         }))
     }
 
-    #[instrument(skip(request))]
+    #[instrument(skip(_request))]
     async fn shut_down(
         &self,
-        request: Request<ShutDownRequest>,
+        _request: Request<ShutDownRequest>,
     ) -> Result<Response<ShutDownReply>, Status> {
         tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(50)).await;

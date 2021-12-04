@@ -1,8 +1,9 @@
 use crate::peering::hash::Key;
 use std::net::SocketAddr;
+use tonic::Status;
 
 pub struct TransportError {
-    pub tonic_error: tonic::transport::Error,
+    pub cause: tonic::transport::Error,
     pub message: String,
 }
 
@@ -26,4 +27,19 @@ pub enum GetError {
 
 pub enum IntroductionError {
     Common(CommonError),
+}
+
+pub struct ConnectionFailedError {
+    pub addr: SocketAddr,
+    pub cause: tonic::transport::Error,
+}
+
+pub struct StatusError {
+    pub addr: SocketAddr,
+    pub cause: Status,
+}
+
+pub enum ClientError {
+    ConnectionFailed(ConnectionFailedError),
+    Status(StatusError),
 }

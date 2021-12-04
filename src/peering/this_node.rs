@@ -18,6 +18,9 @@ impl OtherNode {
     fn new(addr: SocketAddr, last_seen: Instant) -> Self {
         Self { addr, last_seen }
     }
+    pub async fn stalest_peer() -> Option<OtherNode> {
+        todo!()
+    }
 }
 
 #[derive(Debug)]
@@ -69,4 +72,11 @@ impl ThisNode {
     pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<String, GetError> {
         todo!();
     }
+
+    pub async fn stalest_peer(self: &Arc<Self>) -> Option<OtherNode> {
+        todo!()
+    }
+
+    pub async fn mark_alive(self: &Arc<Self>, peer: OtherNode) {}
+    pub async fn mark_dead(self: &Arc<Self>, peer: OtherNode) {}
 }

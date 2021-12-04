@@ -6,9 +6,11 @@ use tracing_appender;
 use tracing_subscriber;
 
 mod peering;
+use peering::health_check::spawn_health_check;
 use peering::service::run_service;
 use peering::this_node::ThisNode;
 use peering::utils;
+use tokio::time::Duration;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
@@ -38,7 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let this_node = Arc::new(ThisNode::new(addr, peers));
 
-    run_service(this_node, args.port).await;
+    spawn_health_check(&this_node, Duration::from_secs(args.check_interval));
+
+    run_service(this_node.clone(), args.port)
+        .await
+        .expect("Server crashed");
 
     Ok(())
 }
