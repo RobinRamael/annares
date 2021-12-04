@@ -23,7 +23,7 @@ pub async fn run_loop(node: &Arc<ThisNode>, interval: Duration) -> tokio::task::
 }
 
 pub async fn check_single_peer(node: &Arc<ThisNode>) {
-    let peer = match node.stalest_peer().await {
+    let peer = match node.peers.stalest().await {
         Some(peer) => peer,
         None => {
             return;
@@ -31,7 +31,7 @@ pub async fn check_single_peer(node: &Arc<ThisNode>) {
     };
 
     match Client::health_check(&peer.addr).await {
-        Ok(()) => node.mark_alive(peer).await,
-        Err(_) => node.mark_dead(peer).await,
+        Ok(()) => node.peers.mark_alive(peer).await,
+        Err(_) => node.peers.mark_dead(peer).await,
     }
 }

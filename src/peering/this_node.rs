@@ -4,22 +4,29 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
+use crate::peering::client::Client;
 use crate::peering::errors::*;
 
 type Key = crate::peering::hash::Hash;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OtherNode {
     pub addr: SocketAddr,
+    pub key: Key,
     pub last_seen: Instant,
 }
 
 impl OtherNode {
     fn new(addr: SocketAddr, last_seen: Instant) -> Self {
-        Self { addr, last_seen }
+        Self {
+            addr,
+            last_seen,
+            key: Key::hash(&addr.to_string()),
+        }
     }
-    pub async fn stalest_peer() -> Option<OtherNode> {
-        todo!()
+
+    fn distance_to(&self, key: &Key) -> Key {
+        self.key.cyclic_distance(&key)
     }
 }
 
@@ -27,7 +34,7 @@ impl OtherNode {
 pub struct ThisNode {
     pub addr: SocketAddr,
     hash: Key,
-    pub known_peers: Arc<RwLock<HashMap<SocketAddr, OtherNode>>>,
+    pub peers: Peers,
     pub primary_store: Arc<RwLock<HashMap<Key, String>>>,
     pub secondary_store: Arc<RwLock<HashMap<SocketAddr, Vec<(Key, String)>>>>,
     pub secondants: Arc<RwLock<HashMap<Key, OtherNode>>>,
@@ -44,7 +51,9 @@ impl ThisNode {
         ThisNode {
             addr,
             hash: Key::hash(&addr.to_string()),
-            known_peers: Arc::new(RwLock::new(peer_map)),
+            peers: Peers {
+                known_peers: Arc::new(RwLock::new(peer_map)),
+            },
             primary_store: Arc::new(RwLock::new(HashMap::new())),
             secondary_store: Arc::new(RwLock::new(HashMap::new())),
             secondants: Arc::new(RwLock::new(HashMap::new())),
@@ -65,18 +74,102 @@ impl ThisNode {
         todo!();
     }
 
-    pub async fn secondary_store_rcvd(self: &Arc<Self>, value: String) -> Result<(), StoreError> {
-        todo!();
+    pub async fn secondary_store_rcvd(
+        self: &Arc<Self>,
+        value: String,
+        primary_holder: SocketAddr,
+    ) -> Result<(), StoreError> {
+        let mut secondary_store = self.secondary_store.write().await;
+
+        let key = Key::hash(&value);
+
+        secondary_store
+            .entry(primary_holder)
+            .or_insert(vec![])
+            .push((key, value));
+
+        Ok(())
     }
 
-    pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<String, GetError> {
-        todo!();
+    pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<(String, SocketAddr), GetError> {
+        let primary_store = self.primary_store.read().await;
+
+        if let Some(value) = primary_store.get(&key) {
+            return Ok((value.clone(), self.addr));
+        }
+
+        drop(primary_store);
+
+        match self.peers.nearest_to(&key).await {
+            Some(peer) => match Client::get(&peer.addr, &key).await {
+                Ok(res) => Ok(res),
+                Err(ClientError::ConnectionFailed(_)) => {
+                    self.peers.mark_dead(peer).await;
+                    // TODO: is there mores we can try here: wait for the secondary to notice
+                    // this death or try to find the secondary ourselves?
+                    Err(GetError::Common(CommonError::Internal(InternalError {
+                        message: "primary holder down".to_string(),
+                    })))
+                }
+                Err(ClientError::MalformedResponse(_)) => {
+                    Err(GetError::Common(CommonError::Internal(InternalError {
+                        message: "got malformed response from client".to_string(),
+                    })))
+                }
+                Err(ClientError::Status(err)) => Err(GetError::Common(CommonError::Status(err))),
+            },
+            None => Err(GetError::NotFound(NotFoundError {
+                key: key,
+                originating_node: self.addr,
+            })),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Peers {
+    pub known_peers: Arc<RwLock<HashMap<SocketAddr, OtherNode>>>,
+}
+
+impl Peers {
+    pub async fn stalest(&self) -> Option<OtherNode> {
+        let known_peers = self.known_peers.read().await;
+
+        known_peers
+            .values()
+            .cloned()
+            .max_by_key(|p| Instant::now() - p.last_seen)
     }
 
-    pub async fn stalest_peer(self: &Arc<Self>) -> Option<OtherNode> {
-        todo!()
+    pub async fn mark_alive(&self, peer: OtherNode) {
+        let mut known_peers = self.known_peers.write().await;
+
+        let mut peer = known_peers
+            .get_mut(&peer.addr)
+            .expect("This really should be here...");
+
+        peer.last_seen = Instant::now();
+    }
+    pub async fn mark_dead(&self, peer: OtherNode) {
+        let mut known_peers = self.known_peers.write().await;
+
+        if let Some((addr, peer)) = known_peers.remove_entry(&peer.addr) {
+            // TODO!
+        } // else someone got to it first?
     }
 
-    pub async fn mark_alive(self: &Arc<Self>, peer: OtherNode) {}
-    pub async fn mark_dead(self: &Arc<Self>, peer: OtherNode) {}
+    pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
+        let known_peers = self.known_peers.read().await;
+
+        known_peers
+            .values()
+            .cloned()
+            .min_by_key(|peer| peer.distance_to(key))
+    }
+}
+
+impl std::hash::Hash for OtherNode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.addr.hash(state);
+    }
 }

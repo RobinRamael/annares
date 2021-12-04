@@ -1,6 +1,7 @@
 use crate::peering::errors::*;
 use crate::peering::grpc::node_service_client::NodeServiceClient;
 use crate::peering::grpc::*;
+use crate::peering::hash::Key;
 use crate::peering::utils;
 use std::net::SocketAddr;
 use tonic::{Request, Response};
@@ -29,6 +30,38 @@ impl Client {
             .await
         {
             Ok(_) => Ok(()),
+            Err(err) => Err(ClientError::Status(StatusError {
+                addr: addr.clone(),
+                cause: err,
+            })),
+        }
+    }
+
+    pub async fn get(addr: &SocketAddr, key: &Key) -> Result<(String, SocketAddr), ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .get(Request::new(GetRequest {
+                key: key.as_hex_string(),
+            }))
+            .await
+        {
+            Ok(response) => {
+                let GetReply {
+                    value,
+                    primary_holder,
+                } = response.into_inner();
+
+                let parsed_holder =
+                    primary_holder
+                        .parse()
+                        .or(Err(ClientError::MalformedResponse(
+                            MalformedResponseError {},
+                        )))?;
+
+                Ok((value, parsed_holder))
+            }
             Err(err) => Err(ClientError::Status(StatusError {
                 addr: addr.clone(),
                 cause: err,

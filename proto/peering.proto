@@ -74,6 +74,7 @@ message GetRequest {
 
 message GetReply {
   string value = 1;
+  string primaryHolder = 2;
 }
 
 message KeyValuePair {

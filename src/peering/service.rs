@@ -37,6 +37,16 @@ impl ThisNodeService {
     fn new(node: Arc<ThisNode>) -> Self {
         ThisNodeService { node }
     }
+
+    fn common_error_into_status(&self, err: CommonError) -> Status {
+        match err {
+            CommonError::Status(err) => Status::new(
+                err.cause.code(),
+                format!("{}: {}", self.node.addr, err.cause.message()),
+            ), // pass on status errors to the next node
+            _ => Status::new(Code::Internal, "Internal Error"),
+        }
+    }
 }
 
 #[async_trait]
@@ -58,7 +68,7 @@ impl NodeService for ThisNodeService {
                 known_peers: known_peers.iter().map(KnownPeer::from).collect(),
                 data,
             })),
-            Err(IntroductionError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
+            Err(IntroductionError::Common(err)) => Err(self.common_error_into_status(err)), // pass on status errors to the next node
         }
     }
     #[instrument(skip(request))]
@@ -70,7 +80,10 @@ impl NodeService for ThisNodeService {
             .or(Err(Status::new(Code::InvalidArgument, "Malformed Key")))?;
 
         match self.node.get_rcvd(parsed_key).await {
-            Ok(value) => Ok(Response::new(GetReply { value })),
+            Ok((value, primary_holder)) => Ok(Response::new(GetReply {
+                value,
+                primary_holder: primary_holder.to_string(),
+            })),
             Err(GetError::NotFound(NotFoundError {
                 key,
                 originating_node,
@@ -82,7 +95,7 @@ impl NodeService for ThisNodeService {
                     originating_node.to_string()
                 ),
             )),
-            Err(GetError::Common(_)) => Err(Status::new(Code::Internal, "Internal error")),
+            Err(GetError::Common(err)) => Err(self.common_error_into_status(err)), // pass on status errors to the next node
         }
     }
 
@@ -95,17 +108,26 @@ impl NodeService for ThisNodeService {
                 key: key.as_hex_string(),
                 stored_in: stored_in.to_string(),
             })),
-            Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
+            Err(StoreError::Common(err)) => Err(self.common_error_into_status(err)),
         }
     }
+
     #[instrument(skip(request))]
     async fn store_secondary(
         &self,
         request: Request<SecondaryStoreRequest>,
     ) -> Result<Response<SecondaryStoreReply>, Status> {
-        let SecondaryStoreRequest { value, .. } = request.into_inner();
+        let SecondaryStoreRequest {
+            value,
+            primary_holder,
+        } = request.into_inner();
 
-        match self.node.secondary_store_rcvd(value).await {
+        let parsed_addr = primary_holder.parse().or(Err(Status::new(
+            Code::InvalidArgument,
+            "Malformed primary holder address",
+        )))?;
+
+        match self.node.secondary_store_rcvd(value, parsed_addr).await {
             Ok(()) => Ok(Response::new(SecondaryStoreReply {})),
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
         }

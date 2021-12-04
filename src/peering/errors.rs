@@ -7,8 +7,14 @@ pub struct TransportError {
     pub message: String,
 }
 
+pub struct InternalError {
+    pub message: String,
+}
+
 pub enum CommonError {
-    Internal(TransportError),
+    Transport(TransportError),
+    Internal(InternalError),
+    Status(StatusError),
 }
 
 pub enum StoreError {
@@ -39,7 +45,11 @@ pub struct StatusError {
     pub cause: Status,
 }
 
+pub struct MalformedResponseError {}
+
 pub enum ClientError {
     ConnectionFailed(ConnectionFailedError),
     Status(StatusError),
+    MalformedResponse(MalformedResponseError),
 }
+
