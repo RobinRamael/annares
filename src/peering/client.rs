@@ -68,4 +68,32 @@ impl Client {
             })),
         }
     }
+
+    pub async fn store(addr: &SocketAddr, value: String) -> Result<(Key, SocketAddr), ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .store(Request::new(StoreRequest { value }))
+            .await
+        {
+            Ok(resp) => {
+                let StoreReply { key, stored_in } = resp.into_inner();
+
+                let parsed_holder = stored_in.parse().or(Err(ClientError::MalformedResponse(
+                    MalformedResponseError {},
+                )))?;
+
+                let parsed_key = Key::try_from(key).or(Err(ClientError::MalformedResponse(
+                    MalformedResponseError {},
+                )))?;
+
+                Ok((parsed_key, parsed_holder))
+            }
+            Err(err) => Err(ClientError::Status(StatusError {
+                addr: addr.clone(),
+                cause: err,
+            })),
+        }
+    }
 }

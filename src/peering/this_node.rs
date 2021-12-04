@@ -71,6 +71,45 @@ impl ThisNode {
         self: &Arc<Self>,
         value: String,
     ) -> Result<(Key, SocketAddr), StoreError> {
+        let key = Key::hash(&value);
+
+        let nearest = self.peers.nearest_to(&key).await.and_then(|peer| {
+            if peer.distance_to(&key) < self.hash.cyclic_distance(&key) {
+                Some(peer)
+            } else {
+                None
+            }
+        });
+
+        match nearest {
+            Some(peer) => self.delegate_store(peer, value).await,
+            None => {
+                self.store_here(&key, value).await;
+                Ok((key, self.addr))
+            }
+        }
+    }
+
+    async fn delegate_store(
+        self: &Arc<Self>,
+        peer: OtherNode,
+        value: String,
+    ) -> Result<(Key, SocketAddr), StoreError> {
+        todo!()
+    }
+
+    async fn store_here(self: &Arc<Self>, key: &Key, value: String) -> () {
+        let mut primary_store = self.primary_store.write().await;
+        primary_store.insert(key.clone(), value.clone());
+
+        let self_clone = Arc::clone(self);
+        let value_clone = value.clone();
+        tokio::task::spawn(async move {
+            self_clone.store_in_secondants(value_clone).await;
+        });
+    }
+
+    async fn store_in_secondants(self: &Arc<Self>, value: String) {
         todo!();
     }
 
@@ -101,27 +140,33 @@ impl ThisNode {
         drop(primary_store);
 
         match self.peers.nearest_to(&key).await {
-            Some(peer) => match Client::get(&peer.addr, &key).await {
-                Ok(res) => Ok(res),
-                Err(ClientError::ConnectionFailed(_)) => {
-                    self.peers.mark_dead(peer).await;
-                    // TODO: is there mores we can try here: wait for the secondary to notice
-                    // this death or try to find the secondary ourselves?
-                    Err(GetError::Common(CommonError::Internal(InternalError {
-                        message: "primary holder down".to_string(),
-                    })))
-                }
-                Err(ClientError::MalformedResponse(_)) => {
-                    Err(GetError::Common(CommonError::Internal(InternalError {
-                        message: "got malformed response from client".to_string(),
-                    })))
-                }
-                Err(ClientError::Status(err)) => Err(GetError::Common(CommonError::Status(err))),
-            },
+            Some(peer) => self.delegate_get(peer, key).await,
             None => Err(GetError::NotFound(NotFoundError {
-                key: key,
+                key,
                 originating_node: self.addr,
             })),
+        }
+    }
+
+    async fn delegate_get(
+        &self,
+        peer: OtherNode,
+        key: Key,
+    ) -> Result<(String, SocketAddr), GetError> {
+        match Client::get(&peer.addr, &key).await {
+            Ok(res) => Ok(res),
+            Err(ClientError::ConnectionFailed(_)) => {
+                self.peers.mark_dead(peer).await;
+                // TODO: is there more we can try here? wait for the secondary to notice
+                // this death or try to find the secondary ourselves?
+                Err(GetError::Common(CommonError::Unavailable))
+            }
+            Err(ClientError::MalformedResponse(_)) => {
+                Err(GetError::Common(CommonError::Internal(InternalError {
+                    message: "got malformed response from client".to_string(),
+                })))
+            }
+            Err(ClientError::Status(err)) => Err(GetError::Common(CommonError::Status(err))),
         }
     }
 }

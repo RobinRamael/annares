@@ -43,7 +43,11 @@ impl ThisNodeService {
             CommonError::Status(err) => Status::new(
                 err.cause.code(),
                 format!("{}: {}", self.node.addr, err.cause.message()),
-            ), // pass on status errors to the next node
+            ),
+            CommonError::Unavailable => Status::new(
+                Code::Unavailable,
+                "Network still recovering. Try again later.",
+            ),
             _ => Status::new(Code::Internal, "Internal Error"),
         }
     }

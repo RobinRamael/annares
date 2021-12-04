@@ -15,6 +15,7 @@ pub enum CommonError {
     Transport(TransportError),
     Internal(InternalError),
     Status(StatusError),
+    Unavailable,
 }
 
 pub enum StoreError {
@@ -52,4 +53,3 @@ pub enum ClientError {
     Status(StatusError),
     MalformedResponse(MalformedResponseError),
 }
-
