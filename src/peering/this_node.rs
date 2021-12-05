@@ -42,7 +42,7 @@ pub struct ThisNode {
     hash: Key,
     pub peers: Peers,
     pub primary_store: Arc<RwLock<HashMap<Key, String>>>,
-    pub secondary_store: Arc<RwLock<HashMap<SocketAddr, Vec<(Key, String)>>>>,
+    pub secondary_store: Arc<RwLock<HashMap<SocketAddr, HashMap<Key, String>>>>,
     pub secondants: Arc<RwLock<HashMap<Key, OtherNode>>>,
 }
 
@@ -136,10 +136,7 @@ impl ThisNode {
 
         for (addr, key) in to_remove {
             secondary_store.get_mut(&addr).map(|store| {
-                if let Some(idx) = store.iter().position(|(k, _)| *k == key) {
-                    // TODO: why is this not just as hashset?
-                    store.swap_remove(idx);
-                };
+                store.remove(&key);
             });
         }
     }
@@ -342,8 +339,8 @@ impl ThisNode {
 
         secondary_store
             .entry(primary_holder)
-            .or_insert(vec![])
-            .push((key.clone(), value));
+            .or_insert(HashMap::new())
+            .insert(key, value);
 
         Ok(key)
     }
@@ -478,14 +475,11 @@ impl ThisNode {
             match task.await.expect("join error?!") {
                 Ok((key, peer)) => {
                     let mut secondary_store = self.secondary_store.write().await;
-                    let kvs = secondary_store.get_mut(&dead_peer.addr);
-                    match kvs {
-                        Some(kvs) => {
-                            info!("looking for {:?} in {:?}", &key, &kvs);
-                            if let Some(idx) = kvs.iter().position(|(k, _)| *k == key) {
-                                // TODO: why is this not just as hashset?
-                                kvs.swap_remove(idx);
-                            } else {
+                    let store = secondary_store.get_mut(&dead_peer.addr);
+                    match store {
+                        Some(store) => {
+                            let val = store.remove(&key);
+                            if val.is_none() {
                                 warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, key)
                             }
                         }

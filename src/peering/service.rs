@@ -2,7 +2,8 @@ use crate::peering::errors::*;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::this_node::{OtherNode, ThisNode};
-use std::net::{AddrParseError, SocketAddr};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use std::sync::Arc;
 use tonic::async_trait;
@@ -230,9 +231,8 @@ impl From<&OtherNode> for KnownPeer {
     }
 }
 
-
-impl From<(&SocketAddr, &Vec<(Key, String)>)> for SecondaryStoreEntry {
-    fn from((addr, entries): (&SocketAddr, &Vec<(Key, String)>)) -> Self {
+impl From<(&SocketAddr, &HashMap<Key, String>)> for SecondaryStoreEntry {
+    fn from((addr, entries): (&SocketAddr, &HashMap<Key, String>)) -> Self {
         SecondaryStoreEntry {
             addr: addr.to_string(),
             entries: entries
