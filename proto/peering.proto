@@ -20,6 +20,7 @@ service NodeService {
   rpc get (GetRequest) returns (GetReply);
   rpc store (StoreRequest) returns (StoreReply);
   rpc storeSecondary (SecondaryStoreRequest) returns (SecondaryStoreReply);
+  rpc moveValues (MoveValuesRequest) returns (MoveValuesReply);
   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
 
   rpc getStatus (GetStatusRequest) returns (GetStatusReply);
@@ -33,9 +34,15 @@ message IntroductionRequest {
 
 message IntroductionReply {
   repeated KnownPeer knownPeers = 1;
-  repeated string data = 2;
 }
 
+message MoveValuesRequest {
+  repeated string values = 1;
+}
+
+message MoveValuesReply {
+  repeated string keys = 1;
+}
 message ListPeersRequest {}
 
 message KnownPeer {

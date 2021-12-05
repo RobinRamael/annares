@@ -68,9 +68,8 @@ impl NodeService for ThisNodeService {
         )))?;
 
         match self.node.introduction_rcvd(parsed_addr).await {
-            Ok((known_peers, data)) => Ok(Response::new(IntroductionReply {
+            Ok(known_peers) => Ok(Response::new(IntroductionReply {
                 known_peers: known_peers.iter().map(KnownPeer::from).collect(),
-                data,
             })),
             Err(IntroductionError::Common(err)) => Err(self.common_error_into_status(err)), // pass on status errors to the next node
         }
@@ -136,6 +135,20 @@ impl NodeService for ThisNodeService {
                 key: key.as_hex_string(),
             })),
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
+        }
+    }
+    #[instrument(skip(request))]
+    async fn move_values(
+        &self,
+        request: Request<MoveValuesRequest>,
+    ) -> Result<Response<MoveValuesReply>, Status> {
+        let MoveValuesRequest { values } = request.into_inner();
+
+        match self.node.move_values_rcvd(values).await {
+            Ok(keys) => Ok(Response::new(MoveValuesReply {
+                keys: keys.iter().map(Key::as_hex_string).collect(),
+            })),
+            Err(MoveValuesError::Common(err)) => Err(self.common_error_into_status(err)),
         }
     }
     #[instrument(skip(_request))]

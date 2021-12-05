@@ -1,17 +1,14 @@
-use futures::future;
-use futures::stream::FuturesUnordered;
 use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tokio::task::JoinError;
 
 use crate::peering::client::Client;
 use crate::peering::errors::*;
 
-use tracing::{error, info};
+use tracing::{error, info, instrument, warn};
 
 type Key = crate::peering::hash::Hash;
 
@@ -68,28 +65,114 @@ impl ThisNode {
         }
     }
 
+    fn distance_to(&self, key: &Key) -> Key {
+        self.hash.cyclic_distance(&key)
+    }
+
+    #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn introduction_rcvd(
         self: &Arc<Self>,
         sender_addr: SocketAddr,
-    ) -> Result<(Vec<OtherNode>, Vec<String>), IntroductionError> {
-        todo!();
+    ) -> Result<Vec<OtherNode>, IntroductionError> {
+        let (old_peers, new_peer) = self.peers.introduce(sender_addr).await;
+        info!(peer=?new_peer, "New peer just dropped");
+
+        let self_clone = Arc::clone(self);
+        let new_peer_clone = new_peer.clone();
+        tokio::spawn(async move { self_clone.move_values_to_peer(new_peer_clone).await });
+
+        Ok(old_peers)
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
+    async fn move_values_to_peer(self: &Arc<Self>, peer: OtherNode) {
+        let primary_store = self.primary_store.read().await;
+        let values_to_move = primary_store
+            .iter()
+            .filter(|(key, _value)| peer.distance_to(key) < self.distance_to(key))
+            .map(|(_, v)| v)
+            .cloned()
+            .collect();
+
+        drop(primary_store); // don't hold the lock while we wait for the other node.
+                             // this allows other nodes that don't known about
+                             // the new peer yet still get the value here in the meantime
+
+        match Client::move_values(&peer.addr, values_to_move).await {
+            Ok(keys) => {
+                let mut primary_store = self.primary_store.write().await;
+
+                for key in keys {
+                    let removed_value = primary_store.remove(&key);
+                    match removed_value {
+                        Some(removed_value) => {
+                            info!("{} no longer held here", removed_value);
+                        }
+                        None => {
+                            warn!("Tried to remove a value that wasn't here (anymore?)")
+                        }
+                    }
+                }
+            }
+            Err(_err) => {
+                error!("Failed to move values")
+            }
+        }
+    }
+
+    #[instrument(skip(self), fields(port=?self.addr))]
+    pub async fn move_values_rcvd(
+        self: &Arc<Self>,
+        values: Vec<String>,
+    ) -> Result<Vec<Key>, MoveValuesError> {
+        let mut store_here = vec![];
+
+        for value in values {
+            let key = Key::hash(&value);
+
+            let my_distance = self.distance_to(&key);
+
+            match self
+                .peers
+                .nearest_to_but_less_than(&key, &my_distance.clone())
+                .await
+                .clone()
+            {
+                Some(peer) => {
+                    warn!(value=?value, "Got value that was not meant for me, rerouting.");
+                    let value = value.clone();
+                    // FIXME: when this happens (succesfully or unsuccesfully) the value is not removed in the calling node.
+                    tokio::spawn(async move { Client::store(&peer.addr, value).await });
+                }
+                None => store_here.push((key, value)),
+            };
+        }
+
+        let mut primary_store = self.primary_store.write().await;
+
+        let stored_keys = store_here
+            .into_iter()
+            .map(|(key, value)| {
+                primary_store.insert(key.clone(), value);
+                key
+            })
+            .collect();
+
+        Ok(stored_keys)
+    }
+
+    #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn store_rcvd(
         self: &Arc<Self>,
         value: String,
     ) -> Result<(Key, SocketAddr), StoreError> {
         let key = Key::hash(&value);
 
-        let nearest = self.peers.nearest_to(&key).await.and_then(|peer| {
-            if peer.distance_to(&key) < self.hash.cyclic_distance(&key) {
-                Some(peer)
-            } else {
-                None
-            }
-        });
-
-        match nearest {
+        match self
+            .peers
+            .nearest_to_but_less_than(&key, &self.distance_to(&key))
+            .await
+        {
             Some(peer) => self.delegate_store(peer, value).await,
             None => {
                 self.store_here(&key, value).await;
@@ -98,14 +181,36 @@ impl ThisNode {
         }
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
+    async fn handle_connection_failed(&self, peer: OtherNode) -> CommonError {
+        warn!("A body was found!");
+        self.peers.mark_dead(peer).await;
+        // FIXME: is there more we can try here? wait for the secondary to notice
+        // this death or try to find the secondary ourselves?
+        CommonError::Unavailable
+    }
+
+    #[instrument(skip(self), fields(port=?self.addr))]
     async fn delegate_store(
         self: &Arc<Self>,
         peer: OtherNode,
         value: String,
     ) -> Result<(Key, SocketAddr), StoreError> {
-        todo!()
+        match Client::store(&peer.addr, value).await {
+            Ok(res) => Ok(res),
+            Err(ClientError::ConnectionFailed(_)) => Err(StoreError::Common(
+                self.handle_connection_failed(peer).await,
+            )),
+            Err(ClientError::MalformedResponse) => {
+                Err(StoreError::Common(CommonError::Internal(InternalError {
+                    message: "got malformed response from client".to_string(),
+                })))
+            }
+            Err(ClientError::Status(err)) => Err(StoreError::Common(CommonError::Status(err))),
+        }
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     async fn store_here(self: &Arc<Self>, key: &Key, value: String) -> () {
         let mut primary_store = self.primary_store.write().await;
         primary_store.insert(key.clone(), value.clone());
@@ -117,6 +222,7 @@ impl ThisNode {
         });
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     async fn store_in_secondants(self: &Arc<Self>, value: String) {
         let tasks: Vec<_> = self
             .peers
@@ -142,7 +248,7 @@ impl ThisNode {
                     Ok((peer, key)) => self.store_as_secondant(peer, key).await,
                     Err(_) => {
                         error!("client error when assigning secondant");
-                        // TODO: restructure this fn so we can retry another node here
+                        // FIXME: restructure this fn so we can retry another node here
                     }
                 },
                 Err(_) => {
@@ -152,11 +258,13 @@ impl ThisNode {
         }
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn store_as_secondant(&self, peer: OtherNode, key: Key) {
         let mut secondants = self.secondants.write().await;
         secondants.insert(key, peer);
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn secondary_store_rcvd(
         self: &Arc<Self>,
         value: String,
@@ -174,6 +282,7 @@ impl ThisNode {
         Ok(key)
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<(String, SocketAddr), GetError> {
         let primary_store = self.primary_store.read().await;
 
@@ -192,6 +301,7 @@ impl ThisNode {
         }
     }
 
+    #[instrument(skip(self), fields(port=?self.addr))]
     async fn delegate_get(
         &self,
         peer: OtherNode,
@@ -200,10 +310,7 @@ impl ThisNode {
         match Client::get(&peer.addr, &key).await {
             Ok(res) => Ok(res),
             Err(ClientError::ConnectionFailed(_)) => {
-                self.peers.mark_dead(peer).await;
-                // TODO: is there more we can try here? wait for the secondary to notice
-                // this death or try to find the secondary ourselves?
-                Err(GetError::Common(CommonError::Unavailable))
+                Err(GetError::Common(self.handle_connection_failed(peer).await))
             }
             Err(ClientError::MalformedResponse) => {
                 Err(GetError::Common(CommonError::Internal(InternalError {
@@ -239,6 +346,7 @@ impl Peers {
 
         peer.last_seen = Instant::now();
     }
+
     pub async fn mark_dead(&self, peer: OtherNode) {
         let mut known_peers = self.known_peers.write().await;
 
@@ -256,6 +364,20 @@ impl Peers {
             .min_by_key(|peer| peer.distance_to(key))
     }
 
+    pub async fn nearest_to_but_less_than(
+        &self,
+        key: &Key,
+        min_distance: &Key,
+    ) -> Option<OtherNode> {
+        self.nearest_to(&key).await.and_then(|peer| {
+            if &peer.distance_to(&key) < min_distance {
+                Some(peer)
+            } else {
+                None
+            }
+        })
+    }
+
     pub async fn pick(&self, n: usize) -> Vec<OtherNode> {
         let peers = self.known_peers.read().await;
 
@@ -266,6 +388,18 @@ impl Peers {
             // FIXME: this min here means that when the network is smaller than REDUNDANCY,
             // the number of stewards for this value will stay at the same size
             .choose_multiple(&mut rng, std::cmp::min(n, peers.len()))
+    }
+
+    // returns the nodes before the new one was added!
+    pub async fn introduce(&self, addr: SocketAddr) -> (Vec<OtherNode>, OtherNode) {
+        let mut peers = self.known_peers.write().await;
+
+        let old_peers = peers.values().cloned().collect();
+
+        let new_peer = OtherNode::new(addr, Instant::now());
+        peers.insert(new_peer.addr, new_peer.clone());
+
+        (old_peers, new_peer)
     }
 }
 

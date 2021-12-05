@@ -4,7 +4,7 @@ use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
 use std::net::SocketAddr;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Status};
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,
@@ -79,6 +79,31 @@ impl Client {
                 let parsed_key = Key::try_from(key).or(Err(ClientError::MalformedResponse))?;
 
                 Ok((parsed_key, parsed_holder))
+            }
+            Err(err) => Err(to_status_err(err, addr)),
+        }
+    }
+
+    pub async fn move_values(
+        addr: &SocketAddr,
+        values: Vec<String>,
+    ) -> Result<Vec<Key>, ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .move_values(Request::new(MoveValuesRequest { values }))
+            .await
+        {
+            Ok(resp) => {
+                let MoveValuesReply { keys } = resp.into_inner();
+
+                let parsed_keys = keys
+                    .into_iter()
+                    .map(|key| Key::try_from(key).or(Err(ClientError::MalformedResponse)))
+                    .collect();
+
+                parsed_keys
             }
             Err(err) => Err(to_status_err(err, addr)),
         }
