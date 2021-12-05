@@ -91,14 +91,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cli::GetStatus(cfg) => match Client::get_status(&cfg.base.peer).await {
             Ok((primary_store, secondary_store, secondants)) => {
-                println!("State of {}:", cfg.base.peer);
+                println!("State of {}:\n", cfg.base.peer);
                 println!("Primary data:");
 
                 for KeyValuePair { key, value } in primary_store.iter() {
                     println!("  - {}: {}", shorten(key), value);
                 }
 
-                println!("Secondary data:");
+                println!("\nSecondary data:");
 
                 for SecondaryStoreEntry { addr, entries } in secondary_store {
                     println!("  - {}: ", addr);
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                println!("Secondary stewardships:");
+                println!("\nSecondary stewardships:");
                 let data_map: HashMap<_, _> = primary_store
                     .into_iter()
                     .map(|kv| {

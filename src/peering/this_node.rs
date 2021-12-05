@@ -8,6 +8,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::peering::client::Client;
 use crate::peering::errors::*;
+use crate::peering::utils::shorten;
 
 use tracing::{error, info, instrument, warn};
 
@@ -105,8 +106,9 @@ impl ThisNode {
         let new_peer_clone = new_peer.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await; // FIXME: do retiries instead of this
-            self_clone.move_values_to_peer(new_peer_clone).await
+            tokio::time::sleep(Duration::from_millis(100)).await; // FIXME: do retries instead of this
+            info!("Moving values to {:?}", new_peer_clone);
+            self_clone.move_values_to_peer(new_peer_clone).await;
         });
 
         Ok(old_peers)
@@ -121,6 +123,8 @@ impl ThisNode {
             .map(|(_, v)| v)
             .cloned()
             .collect();
+
+        info!("Values to move: {:?}", values_to_move);
 
         drop(primary_store); // don't hold the lock while we wait for the other node.
                              // this allows other nodes that don't known about
@@ -153,7 +157,7 @@ impl ThisNode {
         self: &Arc<Self>,
         values: Vec<String>,
     ) -> Result<Vec<Key>, MoveValuesError> {
-        let mut store_here = vec![];
+        let mut stored_keys = vec![];
 
         for value in values {
             let key = Key::hash(&value);
@@ -172,19 +176,12 @@ impl ThisNode {
                     // FIXME: when this happens (succesfully or unsuccesfully) the value is not removed in the calling node.
                     tokio::spawn(async move { Client::store(&peer.addr, value).await });
                 }
-                None => store_here.push((key, value)),
+                None => {
+                    self.store_here(&key, value).await;
+                    stored_keys.push(key);
+                }
             };
         }
-
-        let mut primary_store = self.primary_store.write().await;
-
-        let stored_keys = store_here
-            .into_iter()
-            .map(|(key, value)| {
-                primary_store.insert(key.clone(), value);
-                key
-            })
-            .collect();
 
         Ok(stored_keys)
     }
@@ -298,7 +295,7 @@ impl ThisNode {
                 )
             }
             None => {
-                info!("Stored {} as secondant for {:?} ", key, peer.addr);
+                info!("Stored {:?} as secondant for {:?} ", key, peer.addr);
             }
         }
     }
@@ -451,9 +448,10 @@ impl ThisNode {
             match task.await.expect("join error?!") {
                 Ok((key, peer)) => {
                     let mut secondary_store = self.secondary_store.write().await;
-                    let kvs = secondary_store.get_mut(&peer);
+                    let kvs = secondary_store.get_mut(&dead_peer.addr);
                     match kvs {
                         Some(kvs) => {
+                            info!("looking for {:?} in {:?}", &key, &kvs);
                             if let Some(idx) = kvs.iter().position(|(k, _)| *k == key) {
                                 // TODO: why is this not just as hashset?
                                 kvs.swap_remove(idx);
