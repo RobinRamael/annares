@@ -1,13 +1,21 @@
+use futures::future;
+use futures::stream::FuturesUnordered;
+use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tokio::task::JoinError;
 
 use crate::peering::client::Client;
 use crate::peering::errors::*;
 
+use tracing::{error, info};
+
 type Key = crate::peering::hash::Hash;
+
+const REDUNDANCY: usize = 1;
 
 #[derive(Debug, Clone)]
 pub struct OtherNode {
@@ -110,14 +118,50 @@ impl ThisNode {
     }
 
     async fn store_in_secondants(self: &Arc<Self>, value: String) {
-        todo!();
+        let tasks: Vec<_> = self
+            .peers
+            .pick(REDUNDANCY)
+            .await
+            .into_iter()
+            .map(|peer| {
+                let value = value.clone();
+                let primary_holder = self.addr.clone();
+                let peer_clone = peer.clone();
+                tokio::spawn(async move {
+                    match Client::store_secondary(&peer_clone.addr, value, &primary_holder).await {
+                        Ok(key) => Ok((peer_clone, key)),
+                        Err(err) => Err(err),
+                    }
+                })
+            })
+            .collect();
+
+        for t in tasks {
+            match t.await {
+                Ok(res) => match res {
+                    Ok((peer, key)) => self.store_as_secondant(peer, key).await,
+                    Err(_) => {
+                        error!("client error when assigning secondant");
+                        // TODO: restructure this fn so we can retry another node here
+                    }
+                },
+                Err(_) => {
+                    error!("join error!?");
+                }
+            }
+        }
+    }
+
+    pub async fn store_as_secondant(&self, peer: OtherNode, key: Key) {
+        let mut secondants = self.secondants.write().await;
+        secondants.insert(key, peer);
     }
 
     pub async fn secondary_store_rcvd(
         self: &Arc<Self>,
         value: String,
         primary_holder: SocketAddr,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Key, StoreError> {
         let mut secondary_store = self.secondary_store.write().await;
 
         let key = Key::hash(&value);
@@ -125,9 +169,9 @@ impl ThisNode {
         secondary_store
             .entry(primary_holder)
             .or_insert(vec![])
-            .push((key, value));
+            .push((key.clone(), value));
 
-        Ok(())
+        Ok(key)
     }
 
     pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<(String, SocketAddr), GetError> {
@@ -161,7 +205,7 @@ impl ThisNode {
                 // this death or try to find the secondary ourselves?
                 Err(GetError::Common(CommonError::Unavailable))
             }
-            Err(ClientError::MalformedResponse(_)) => {
+            Err(ClientError::MalformedResponse) => {
                 Err(GetError::Common(CommonError::Internal(InternalError {
                     message: "got malformed response from client".to_string(),
                 })))
@@ -210,6 +254,18 @@ impl Peers {
             .values()
             .cloned()
             .min_by_key(|peer| peer.distance_to(key))
+    }
+
+    pub async fn pick(&self, n: usize) -> Vec<OtherNode> {
+        let peers = self.known_peers.read().await;
+
+        let mut rng = rand::rngs::ThreadRng::default();
+        peers
+            .values()
+            .cloned()
+            // FIXME: this min here means that when the network is smaller than REDUNDANCY,
+            // the number of stewards for this value will stay at the same size
+            .choose_multiple(&mut rng, std::cmp::min(n, peers.len()))
     }
 }
 

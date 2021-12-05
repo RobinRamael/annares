@@ -66,6 +66,8 @@ message SecondaryStoreRequest {
 }
 
 message SecondaryStoreReply {
+  string key = 1;
+
 }
 
 message GetRequest {

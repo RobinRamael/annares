@@ -4,7 +4,7 @@ use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
 use std::net::SocketAddr;
-use tonic::{Request, Response};
+use tonic::{Request, Response, Status};
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,
@@ -53,19 +53,13 @@ impl Client {
                     primary_holder,
                 } = response.into_inner();
 
-                let parsed_holder =
-                    primary_holder
-                        .parse()
-                        .or(Err(ClientError::MalformedResponse(
-                            MalformedResponseError {},
-                        )))?;
+                let parsed_holder = primary_holder
+                    .parse()
+                    .or(Err(ClientError::MalformedResponse))?;
 
                 Ok((value, parsed_holder))
             }
-            Err(err) => Err(ClientError::Status(StatusError {
-                addr: addr.clone(),
-                cause: err,
-            })),
+            Err(err) => Err(to_status_err(err, addr)),
         }
     }
 
@@ -80,20 +74,48 @@ impl Client {
             Ok(resp) => {
                 let StoreReply { key, stored_in } = resp.into_inner();
 
-                let parsed_holder = stored_in.parse().or(Err(ClientError::MalformedResponse(
-                    MalformedResponseError {},
-                )))?;
+                let parsed_holder = stored_in.parse().or(Err(ClientError::MalformedResponse))?;
 
-                let parsed_key = Key::try_from(key).or(Err(ClientError::MalformedResponse(
-                    MalformedResponseError {},
-                )))?;
+                let parsed_key = Key::try_from(key).or(Err(ClientError::MalformedResponse))?;
 
                 Ok((parsed_key, parsed_holder))
             }
-            Err(err) => Err(ClientError::Status(StatusError {
-                addr: addr.clone(),
-                cause: err,
-            })),
+            Err(err) => Err(to_status_err(err, addr)),
         }
     }
+
+    pub async fn store_secondary(
+        addr: &SocketAddr,
+        value: String,
+        primary_holder: &SocketAddr,
+    ) -> Result<Key, ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .store_secondary(Request::new(SecondaryStoreRequest {
+                value,
+                primary_holder: primary_holder.to_string(),
+            }))
+            .await
+        {
+            Ok(resp) => {
+                let resp = resp.into_inner();
+                let key = resp
+                    .key
+                    .try_into()
+                    .or(Err(ClientError::MalformedResponse))?;
+
+                Ok(key)
+            }
+            Err(err) => Err(to_status_err(err, addr)),
+        }
+    }
+}
+
+fn to_status_err(err: Status, addr: &SocketAddr) -> ClientError {
+    ClientError::Status(StatusError {
+        addr: addr.clone(),
+        cause: err,
+    })
 }

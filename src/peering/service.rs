@@ -132,7 +132,9 @@ impl NodeService for ThisNodeService {
         )))?;
 
         match self.node.secondary_store_rcvd(value, parsed_addr).await {
-            Ok(()) => Ok(Response::new(SecondaryStoreReply {})),
+            Ok(key) => Ok(Response::new(SecondaryStoreReply {
+                key: key.as_hex_string(),
+            })),
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
         }
     }

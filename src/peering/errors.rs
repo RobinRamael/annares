@@ -51,5 +51,5 @@ pub struct MalformedResponseError {}
 pub enum ClientError {
     ConnectionFailed(ConnectionFailedError),
     Status(StatusError),
-    MalformedResponse(MalformedResponseError),
+    MalformedResponse,
 }
