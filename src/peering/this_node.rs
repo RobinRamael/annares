@@ -8,7 +8,6 @@ use tokio::time::{Duration, Instant};
 
 use crate::peering::client::Client;
 use crate::peering::errors::*;
-use crate::peering::utils::shorten;
 
 use tracing::{error, info, instrument, warn};
 
@@ -108,14 +107,45 @@ impl ThisNode {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await; // FIXME: do retries instead of this
             info!("Moving values to {:?}", new_peer_clone);
-            self_clone.move_values_to_peer(new_peer_clone).await;
+            self_clone.move_values_to_peer(&new_peer_clone).await;
+            self_clone.clean_secondary_store(&new_peer_clone).await;
         });
 
         Ok(old_peers)
     }
 
+    async fn clean_secondary_store(self: &Arc<Self>, new_peer: &OtherNode) {
+        let mut secondary_store = self.secondary_store.write().await;
+
+        let to_remove = secondary_store
+            .clone()
+            .into_iter()
+            .map(|(addr, store)| {
+                store
+                    .into_iter()
+                    .map(move |(k, _)| (addr.clone(), k.clone()))
+            })
+            .flatten()
+            // if the new peer is closer than the one we are secondant for:
+            .filter(|(addr, key)| {
+                new_peer.distance_to(key) < Key::hash(&addr.to_string()).cyclic_distance(key)
+            })
+            .collect::<Vec<_>>();
+
+        info!("cleaning secondary store: {:?}", to_remove);
+
+        for (addr, key) in to_remove {
+            secondary_store.get_mut(&addr).map(|store| {
+                if let Some(idx) = store.iter().position(|(k, _)| *k == key) {
+                    // TODO: why is this not just as hashset?
+                    store.swap_remove(idx);
+                };
+            });
+        }
+    }
+
     #[instrument(skip(self), fields(port=?self.addr))]
-    async fn move_values_to_peer(self: &Arc<Self>, peer: OtherNode) {
+    async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) {
         let primary_store = self.primary_store.read().await;
         let values_to_move = primary_store
             .iter()
