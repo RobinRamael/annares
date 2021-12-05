@@ -34,11 +34,11 @@ pub async fn check_single_peer(node: &Arc<ThisNode>) {
     match Client::health_check(&peer.addr).await {
         Ok(()) => {
             debug!(node=?node.addr, peer=?peer, "Alive and well");
-            node.peers.mark_alive(peer).await
+            node.mark_alive(&peer).await
         }
         Err(_) => {
             warn!(node=?node.addr, dead_peer=?peer, "A body was found!");
-            node.peers.mark_dead(peer).await
+            node.mark_dead(&peer).await
         }
     }
 }
