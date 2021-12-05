@@ -6,8 +6,11 @@ use crate::peering::utils::shorten;
 
 use sha2::{Digest, Sha256};
 
-#[derive(PartialEq, Eq, Clone, std::hash::Hash)]
-pub struct Arru8<N: ArrayLength<u8> + Eq> {
+#[derive(PartialEq, Eq, Clone, std::hash::Hash, Copy)]
+pub struct Arru8<N: ArrayLength<u8> + Eq>
+where
+    N::ArrayType: Copy,
+{
     //big endian!
     pub arr: GenericArray<u8, N>,
 }
@@ -30,6 +33,7 @@ impl Hash {
 impl<N> std::fmt::LowerHex for Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
+    N::ArrayType: Copy,
 {
     fn fmt(&self, fmtr: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         for byte in self.arr.iter() {
@@ -42,6 +46,7 @@ where
 impl<N> TryFrom<String> for Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
+    N::ArrayType: Copy,
 {
     type Error = hex::FromHexError;
 
@@ -63,21 +68,36 @@ where
 impl<N> std::fmt::Display for Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
+    N::ArrayType: Copy,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "{}", self.as_hex_string())
     }
 }
 
-impl std::fmt::Debug for Hash {
+impl<N> std::fmt::Debug for Arru8<N>
+where
+    N: ArrayLength<u8> + Eq,
+    N::ArrayType: Copy,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "Hash {{ {} }}", shorten(&self.as_hex_string()))
+        if N::to_usize() < 32 {
+            write!(
+                f,
+                "Arru8<{}> {{ {} }}",
+                N::to_usize(),
+                &self.as_hex_string()
+            )
+        } else {
+            write!(f, "Hash {{ {} }}", shorten(&self.as_hex_string()))
+        }
     }
 }
 
 impl<N> Arru8<N>
 where
     N: ArrayLength<u8> + Eq,
+    N::ArrayType: Copy,
 {
     pub fn new(arr: GenericArray<u8, N>) -> Self {
         Arru8 { arr }
@@ -124,7 +144,8 @@ where
 
 impl<N> cmp::PartialOrd for Arru8<N>
 where
-    N: ArrayLength<u8> + Eq,
+    N: ArrayLength<u8> + Eq + Copy,
+    <N as ArrayLength<u8>>::ArrayType: Copy,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -133,7 +154,8 @@ where
 
 impl<N> cmp::Ord for Arru8<N>
 where
-    N: ArrayLength<u8> + Eq,
+    N: ArrayLength<u8> + Eq + Copy,
+    <N as ArrayLength<u8>>::ArrayType: Copy,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         for (n1, n2) in self.arr.iter().zip(other.arr.iter()).rev() {
@@ -147,7 +169,8 @@ where
 }
 impl<N> ops::Sub for Arru8<N>
 where
-    N: ArrayLength<u8> + Eq,
+    N: ArrayLength<u8> + Eq + Copy,
+    <N as ArrayLength<u8>>::ArrayType: Copy,
 {
     type Output = Self;
 
@@ -336,7 +359,8 @@ mod tests {
 
     impl<N> Arbitrary for Arru8<N>
     where
-        N: ArrayLength<u8> + Eq,
+        N: ArrayLength<u8> + Eq + Copy,
+        <N as ArrayLength<u8>>::ArrayType: Copy,
     {
         fn arbitrary(g: &mut Gen) -> Self {
             let mut arr = GenericArray::default();
