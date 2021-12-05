@@ -2,8 +2,9 @@ use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant};
 
 use crate::peering::client::Client;
 use crate::peering::errors::*;
@@ -14,7 +15,7 @@ type Key = crate::peering::hash::Hash;
 
 const REDUNDANCY: usize = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OtherNode {
     pub addr: SocketAddr,
     pub key: Key,
@@ -46,18 +47,12 @@ pub struct ThisNode {
 }
 
 impl ThisNode {
-    pub fn new(addr: SocketAddr, bootstrap_addrs: Vec<SocketAddr>) -> Self {
-        let peer_map = HashMap::from_iter(
-            bootstrap_addrs
-                .into_iter()
-                .map(|addr| (addr, OtherNode::new(addr, Instant::now()))),
-        );
-
+    pub fn new(addr: SocketAddr) -> Self {
         ThisNode {
             addr,
             hash: Key::hash(&addr.to_string()),
             peers: Peers {
-                known_peers: Arc::new(RwLock::new(peer_map)),
+                known_peers: Arc::new(RwLock::new(HashMap::new())),
             },
             primary_store: Arc::new(RwLock::new(HashMap::new())),
             secondary_store: Arc::new(RwLock::new(HashMap::new())),
@@ -69,17 +64,50 @@ impl ThisNode {
         self.hash.cyclic_distance(&key)
     }
 
+    pub async fn mingle(&self, bootstrap_addr: &SocketAddr) {
+        self.peers.introduce(bootstrap_addr).await;
+
+        match Client::introduce(bootstrap_addr, &self.addr).await {
+            Ok(new_peers) => {
+                for addr in new_peers {
+                    if addr != self.addr && &addr != bootstrap_addr {
+                        match Client::introduce(&addr, &self.addr).await {
+                            Ok(peers) => {
+                                for peer in peers {
+                                    self.peers.introduce(&peer).await;
+                                }
+                            }
+                            Err(err) => {
+                                error!("Error introducing myself to {}: {:?}", &addr, err);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                error!(
+                    "Error introducing myself to bootstrap peer {}: {:?}",
+                    &bootstrap_addr, err
+                );
+            }
+        };
+    }
+
     #[instrument(skip(self), fields(port=?self.addr))]
     pub async fn introduction_rcvd(
         self: &Arc<Self>,
         sender_addr: SocketAddr,
     ) -> Result<Vec<OtherNode>, IntroductionError> {
-        let (old_peers, new_peer) = self.peers.introduce(sender_addr).await;
+        let (old_peers, new_peer) = self.peers.introduce(&sender_addr).await;
         info!(peer=?new_peer, "New peer just dropped");
 
         let self_clone = Arc::clone(self);
         let new_peer_clone = new_peer.clone();
-        tokio::spawn(async move { self_clone.move_values_to_peer(new_peer_clone).await });
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await; // FIXME: do retiries instead of this
+            self_clone.move_values_to_peer(new_peer_clone).await
+        });
 
         Ok(old_peers)
     }
@@ -114,8 +142,8 @@ impl ThisNode {
                     }
                 }
             }
-            Err(_err) => {
-                error!("Failed to move values")
+            Err(err) => {
+                error!("Failed to move values: {:?}", err);
             }
         }
     }
@@ -213,15 +241,17 @@ impl ThisNode {
     #[instrument(skip(self), fields(port=?self.addr))]
     async fn store_here(self: &Arc<Self>, key: &Key, value: String) -> () {
         let mut primary_store = self.primary_store.write().await;
-        primary_store.insert(key.clone(), value.clone());
+        let inserted = primary_store.insert(key.clone(), value.clone());
 
-        let self_clone = Arc::clone(self);
-        let value_clone = value.clone();
-        tokio::task::spawn(async move {
-            self_clone
-                .store_in_secondants(value_clone, REDUNDANCY)
-                .await;
-        });
+        if inserted.is_none() {
+            let self_clone = Arc::clone(self);
+            let value_clone = value.clone();
+            tokio::task::spawn(async move {
+                self_clone
+                    .store_in_secondants(value_clone, REDUNDANCY)
+                    .await;
+            });
+        }
     }
 
     #[instrument(skip(self), fields(port=?self.addr))]
@@ -394,27 +424,51 @@ impl ThisNode {
     async fn redistribute_secondary_data_for(self: &Arc<Self>, dead_peer: &OtherNode) {
         let secondary_store = self.secondary_store.read().await;
 
-        match secondary_store.get(&dead_peer.addr) {
-            Some(store) => {
-                // drop(secondary_store)
-                let tasks = store.into_iter().map(|(_, value)| {
-                    let value = value.clone();
-                    let self_clone = Arc::clone(self);
+        let tasks: Vec<JoinHandle<Result<(Key, SocketAddr), StoreError>>> =
+            match secondary_store.get(&dead_peer.addr) {
+                Some(store) => {
+                    // drop(secondary_store)
+                    store
+                        .into_iter()
+                        .map(|(_, value)| {
+                            let value = value.clone();
+                            let self_clone = Arc::clone(self);
 
-                    tokio::spawn(async move { self_clone.store_rcvd(value).await })
-                });
+                            // we need the value to end up somewhere in the network, so
+                            // we can just pretend we received a store call for it.
+                            tokio::spawn(async move { self_clone.store_rcvd(value).await })
+                        })
+                        .collect()
+                }
+                None => {
+                    info!("Not holding any secondary data for {:?}", dead_peer);
+                    return;
+                }
+            };
+        drop(secondary_store);
 
-                for task in tasks {
-                    match task.await.expect("join error?!") {
-                        Ok((key, peer)) => {
-                            // TODO
+        for task in tasks {
+            match task.await.expect("join error?!") {
+                Ok((key, peer)) => {
+                    let mut secondary_store = self.secondary_store.write().await;
+                    let kvs = secondary_store.get_mut(&peer);
+                    match kvs {
+                        Some(kvs) => {
+                            if let Some(idx) = kvs.iter().position(|(k, _)| *k == key) {
+                                // TODO: why is this not just as hashset?
+                                kvs.swap_remove(idx);
+                            } else {
+                                warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, key)
+                            }
                         }
-                        Err(_) => {}
+                        None => {
+                            warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, peer);
+                        }
                     }
                 }
-            }
-            None => {
-                info!("Not holding any secondary data for {:?}", dead_peer)
+                Err(err) => {
+                    error!("Restoring values from secondary failed: {:?}", err);
+                }
             }
         }
     }
@@ -471,13 +525,14 @@ impl Peers {
     }
 
     // returns the nodes before the new one was added!
-    pub async fn introduce(&self, addr: SocketAddr) -> (Vec<OtherNode>, OtherNode) {
+    pub async fn introduce(&self, addr: &SocketAddr) -> (Vec<OtherNode>, OtherNode) {
         let mut peers = self.known_peers.write().await;
 
         let old_peers = peers.values().cloned().collect();
 
-        let new_peer = OtherNode::new(addr, Instant::now());
+        let new_peer = OtherNode::new(addr.clone(), Instant::now());
         peers.insert(new_peer.addr, new_peer.clone());
+        info!("Introduced {}", &new_peer.addr);
 
         (old_peers, new_peer)
     }
@@ -486,5 +541,13 @@ impl Peers {
 impl std::hash::Hash for OtherNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.addr.hash(state);
+    }
+}
+
+impl std::fmt::Debug for OtherNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtherNode")
+            .field("addr", &self.addr)
+            .finish()
     }
 }

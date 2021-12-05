@@ -3,7 +3,7 @@ use crate::peering::grpc::node_service_client::NodeServiceClient;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
-use std::net::SocketAddr;
+use std::net::{AddrParseError, SocketAddr};
 use tonic::{Request, Status};
 
 pub struct Client {
@@ -30,6 +30,36 @@ impl Client {
             .await
         {
             Ok(_) => Ok(()),
+            Err(err) => Err(ClientError::Status(StatusError {
+                addr: addr.clone(),
+                cause: err,
+            })),
+        }
+    }
+
+    pub async fn introduce(
+        addr: &SocketAddr,
+        sender_addr: &SocketAddr,
+    ) -> Result<Vec<SocketAddr>, ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .introduce(Request::new(IntroductionRequest {
+                sender_addr: sender_addr.to_string(),
+            }))
+            .await
+        {
+            Ok(resp) => {
+                let IntroductionReply { known_peers } = resp.into_inner();
+
+                let mut addrs = vec![];
+                for peer in known_peers {
+                    let addr = peer.addr.parse().or(Err(ClientError::MalformedResponse))?;
+                    addrs.push(addr)
+                }
+                Ok(addrs)
+            }
             Err(err) => Err(ClientError::Status(StatusError {
                 addr: addr.clone(),
                 cause: err,
@@ -134,6 +164,47 @@ impl Client {
                 Ok(key)
             }
             Err(err) => Err(to_status_err(err, addr)),
+        }
+    }
+
+    pub async fn get_status(
+        addr: &SocketAddr,
+    ) -> Result<(Vec<KeyValuePair>, Vec<SecondaryStoreEntry>, Vec<Secondant>), ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .get_status(Request::new(GetStatusRequest {}))
+            .await
+        {
+            Ok(resp) => {
+                let GetStatusReply {
+                    primary_store,
+                    secondary_store,
+                    secondants,
+                } = resp.into_inner();
+
+                Ok((primary_store, secondary_store, secondants))
+            }
+            Err(err) => Err(ClientError::Status(StatusError {
+                addr: addr.clone(),
+                cause: err,
+            })),
+        }
+    }
+    pub async fn shut_down(addr: &SocketAddr) -> Result<(), ClientError> {
+        let mut client = Self::connect(addr).await?;
+
+        match client
+            .grpc_client
+            .shut_down(Request::new(ShutDownRequest {}))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => Err(ClientError::Status(StatusError {
+                addr: addr.clone(),
+                cause: err,
+            })),
         }
     }
 }

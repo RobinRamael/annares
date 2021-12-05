@@ -2,7 +2,7 @@ use crate::peering::errors::*;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::this_node::{OtherNode, ThisNode};
-use std::net::SocketAddr;
+use std::net::{AddrParseError, SocketAddr};
 
 use std::sync::Arc;
 use tonic::async_trait;
@@ -55,7 +55,7 @@ impl ThisNodeService {
 
 #[async_trait]
 impl NodeService for ThisNodeService {
-    #[instrument(skip(request))]
+    #[instrument(skip(request, self))]
     async fn introduce(
         &self,
         request: Request<IntroductionRequest>,
@@ -74,7 +74,7 @@ impl NodeService for ThisNodeService {
             Err(IntroductionError::Common(err)) => Err(self.common_error_into_status(err)), // pass on status errors to the next node
         }
     }
-    #[instrument(skip(request))]
+    #[instrument(skip(request, self))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetReply>, Status> {
         let GetRequest { key, .. } = request.into_inner();
 
@@ -102,7 +102,7 @@ impl NodeService for ThisNodeService {
         }
     }
 
-    #[instrument(skip(request))]
+    #[instrument(skip(request, self))]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
         let StoreRequest { value, .. } = request.into_inner();
 
@@ -115,7 +115,7 @@ impl NodeService for ThisNodeService {
         }
     }
 
-    #[instrument(skip(request))]
+    #[instrument(skip(request, self))]
     async fn store_secondary(
         &self,
         request: Request<SecondaryStoreRequest>,
@@ -137,7 +137,7 @@ impl NodeService for ThisNodeService {
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
         }
     }
-    #[instrument(skip(request))]
+    #[instrument(skip(request, self))]
     async fn move_values(
         &self,
         request: Request<MoveValuesRequest>,
@@ -151,7 +151,7 @@ impl NodeService for ThisNodeService {
             Err(MoveValuesError::Common(err)) => Err(self.common_error_into_status(err)),
         }
     }
-    #[instrument(skip(_request))]
+    #[instrument(skip(_request, self))]
     async fn check_health(
         &self,
         _request: Request<HealthCheckRequest>,
@@ -159,7 +159,7 @@ impl NodeService for ThisNodeService {
         Ok(Response::new(HealthCheckReply {}))
     }
 
-    #[instrument(skip(_request))]
+    #[instrument(skip(_request, self))]
     async fn get_status(
         &self,
         _request: Request<GetStatusRequest>,
@@ -182,7 +182,7 @@ impl NodeService for ThisNodeService {
         }))
     }
 
-    #[instrument(skip(_request))]
+    #[instrument(skip(_request, self))]
     async fn shut_down(
         &self,
         _request: Request<ShutDownRequest>,
@@ -229,6 +229,7 @@ impl From<&OtherNode> for KnownPeer {
         }
     }
 }
+
 
 impl From<(&SocketAddr, &Vec<(Key, String)>)> for SecondaryStoreEntry {
     fn from((addr, entries): (&SocketAddr, &Vec<(Key, String)>)) -> Self {
