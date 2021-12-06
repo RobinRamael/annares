@@ -74,7 +74,6 @@ where
         if N::to_usize() < 32 {
             write!(f, "...{}", self.as_hex_string())
         } else {
-            dbg!(self.as_hex_string().len());
             write!(f, "{}", shorten(&self.as_hex_string()))
         }
     }
