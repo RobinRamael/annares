@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cli::StoreValue(cfg) => match Client::store(&cfg.base.peer, cfg.value).await {
             Ok((key, addr)) => {
                 println!("Stored in {}", addr);
-                println!("under {}", key);
+                println!("under {}", key.as_hex_string());
             }
             Err(err) => {
                 println!("{:?}", err);

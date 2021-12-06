@@ -71,7 +71,12 @@ where
     N::ArrayType: Copy,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{}", self.as_hex_string())
+        if N::to_usize() < 32 {
+            write!(f, "...{}", self.as_hex_string())
+        } else {
+            dbg!(self.as_hex_string().len());
+            write!(f, "{}", shorten(&self.as_hex_string()))
+        }
     }
 }
 
