@@ -18,14 +18,18 @@ function run() {
 function runs {
     echo killing all nodes
     pkill node
+    rm .currently_running
+    rm .added_keys
     runfirst 5001;
     echo 5001
+    echo 5001 >> .currently_running
     ((last_port = 5000 + $1 - 1))
     for peer in {5001..$last_port}; do
         ((port = $peer + 1));
         sleep 1;
         echo $port $peer
         run $port $peer &;
+        echo $port >> .currently_running
     done
 }
 
@@ -37,10 +41,24 @@ function enter_data {
 }
 
 function enter_words {
-    for value in $(cat words)
+    echo adding $1 words
+    for value in $(shuf -n $1 words);
     do
-        client store $value -p :5001
+        echo $value
+        client store $value -p ":$(shuf -n 1 .currently_running)" | grep under | cut -f2 -d' '  >> .added_keys
     done
+}
+
+function check {
+    for value in $(cat .added_keys)
+    do
+        client get $value -p ":$(shuf -n 1 .currently_running)"
+    done
+}
+
+function killnode {
+    sed -i "/$1/d" .currently_running 
+    client shutdown -p ":$1"
 }
 
 function monitor {

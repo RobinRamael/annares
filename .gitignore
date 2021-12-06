@@ -1,3 +1,5 @@
 target
 .vim/
 words
+.currently_running
+.added_keys

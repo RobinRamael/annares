@@ -101,9 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\nSecondary data:");
 
                 for SecondaryStoreEntry { addr, entries } in secondary_store {
-                    println!("  - {}: ", addr);
-                    for KeyValuePair { key, value } in entries {
-                        println!("    - {}: {}", shorten(&key), value);
+                    if entries.len() > 0 {
+                        println!("  - {}: ", addr);
+                        for KeyValuePair { key, value } in entries {
+                            println!("    - {}: {}", shorten(&key), value);
+                        }
                     }
                 }
 

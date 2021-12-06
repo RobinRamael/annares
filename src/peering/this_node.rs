@@ -109,6 +109,7 @@ impl ThisNode {
             info!("Moving values to {:?}", new_peer_clone);
             self_clone.move_values_to_peer(&new_peer_clone).await;
             self_clone.clean_secondary_store(&new_peer_clone).await;
+            self_clone.clean_secondants(&new_peer_clone).await;
         });
 
         Ok(old_peers)
@@ -141,6 +142,19 @@ impl ThisNode {
         }
     }
 
+    async fn clean_secondants(self: &Arc<Self>, new_peer: &OtherNode) {
+        let mut secondants = self.secondants.write().await;
+        let to_remove = secondants
+            .clone()
+            .into_iter()
+            .filter(|(key, peer)| new_peer.distance_to(key) < peer.key.cyclic_distance(key))
+            .collect::<Vec<_>>();
+
+        for (key, _) in to_remove {
+            secondants.remove(&key);
+        }
+    }
+
     #[instrument(skip(self), fields(port=?self.addr))]
     async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) {
         let primary_store = self.primary_store.read().await;
@@ -149,13 +163,17 @@ impl ThisNode {
             .filter(|(key, _value)| peer.distance_to(key) < self.distance_to(key))
             .map(|(_, v)| v)
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
 
-        info!("Values to move: {:?}", values_to_move);
 
         drop(primary_store); // don't hold the lock while we wait for the other node.
                              // this allows other nodes that don't known about
                              // the new peer yet still get the value here in the meantime
+        if values_to_move.len() == 0 {
+            return;
+        }
+
+        info!("Values to move: {:?}", values_to_move);
 
         match Client::move_values(&peer.addr, values_to_move).await {
             Ok(keys) => {
