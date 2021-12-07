@@ -1,4 +1,6 @@
 
+export RUST_LOG="info,peering=debug,crate::peering=debug,peering::mod=debug"
+
 CHECK_INTERVAL=2
 
 
@@ -25,10 +27,10 @@ function runs {
     echo 5001 >> .currently_running
     ((last_port = 5000 + $1 - 1))
     for peer in {5001..$last_port}; do
+        sleep 1
         ((port = $peer + 1));
-        sleep 1;
-        echo $port $peer
-        run $port $peer &;
+        echo $port 5001
+        run $port 5001 &;
         echo $port >> .currently_running
     done
 }
@@ -40,7 +42,7 @@ function enter_data {
     done
 }
 
-function enter_words {
+function enter_random_words {
     echo adding $1 words
     for value in $(shuf -n $1 words);
     do
@@ -49,15 +51,28 @@ function enter_words {
     done
 }
 
-function check {
-    for value in $(cat .added_keys)
+function enter_words {
+    echo adding $2 words starting from $1
+    ((n = $1 + $2))
+    for value in $(cat words | sed -n "$1,$n p");
     do
-        client get $value -p ":$(shuf -n 1 .currently_running)"
+        echo $value
+        client store $value -p ":$(shuf -n 1 .currently_running)" | grep under | cut -f2 -d' '  >> .added_keys
+    done
+}
+
+function check {
+    for key in $(cat .added_keys)
+    do
+        shortkey=$(echo $key | sed 's/.*\(....\)$/\1/g')
+        peer=$(shuf -n 1 .currently_running)
+        echo "getting $shortkey from $peer"
+        client get $key -p ":$peer"
     done
 }
 
 function killnode {
-    sed -i "/$1/d" .currently_running 
+    sed -i "/$1/d" .currently_running
     client shutdown -p ":$1"
 }
 
@@ -67,4 +82,17 @@ function monitor {
         echo launching monitor for $port
         kitty watch client status -p "[::1]:$port" &
     done
+}
+
+function debug {
+    rm -rf /tmp/logs/annares.log*
+    touch /tmp/logs/annares.log.2021-12-07
+    touch /tmp/logs/annares.log.2021-12-08
+    cargo check;
+    runs $1;
+    sleep 3
+    enter_words $2 $3;
+    client status -p ":5001";
+    echo "press enter to kill 5001";
+    read; killnode 5001;
 }

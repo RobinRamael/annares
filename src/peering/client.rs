@@ -93,12 +93,19 @@ impl Client {
         }
     }
 
-    pub async fn store(addr: &SocketAddr, value: String) -> Result<(Key, SocketAddr), ClientError> {
+    pub async fn store(
+        addr: &SocketAddr,
+        value: String,
+        corpse_addr: Option<SocketAddr>,
+    ) -> Result<(Key, SocketAddr), ClientError> {
         let mut client = Self::connect(addr).await?;
 
         match client
             .grpc_client
-            .store(Request::new(StoreRequest { value }))
+            .store(Request::new(StoreRequest {
+                value,
+                corpse: corpse_addr.map(|p| p.to_string()),
+            }))
             .await
         {
             Ok(resp) => {
@@ -143,6 +150,7 @@ impl Client {
         addr: &SocketAddr,
         value: String,
         primary_holder: &SocketAddr,
+        corpse: Option<SocketAddr>,
     ) -> Result<Key, ClientError> {
         let mut client = Self::connect(addr).await?;
 
@@ -151,6 +159,7 @@ impl Client {
             .store_secondary(Request::new(SecondaryStoreRequest {
                 value,
                 primary_holder: primary_holder.to_string(),
+                corpse: corpse.map(|p| p.to_string()),
             }))
             .await
         {
@@ -169,7 +178,15 @@ impl Client {
 
     pub async fn get_status(
         addr: &SocketAddr,
-    ) -> Result<(Vec<KeyValuePair>, Vec<SecondaryStoreEntry>, Vec<Secondant>), ClientError> {
+    ) -> Result<
+        (
+            Vec<KeyValuePair>,
+            Vec<SecondaryStoreEntry>,
+            Vec<Secondant>,
+            Vec<KnownPeer>,
+        ),
+        ClientError,
+    > {
         let mut client = Self::connect(addr).await?;
 
         match client
@@ -182,9 +199,10 @@ impl Client {
                     primary_store,
                     secondary_store,
                     secondants,
+                    peers,
                 } = resp.into_inner();
 
-                Ok((primary_store, secondary_store, secondants))
+                Ok((primary_store, secondary_store, secondants, peers))
             }
             Err(err) => Err(ClientError::Status(StatusError {
                 addr: addr.clone(),

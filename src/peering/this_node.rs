@@ -9,7 +9,7 @@ use tokio::time::{Duration, Instant};
 use crate::peering::client::Client;
 use crate::peering::errors::*;
 
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, span, warn, Level};
 
 type Key = crate::peering::hash::Hash;
 
@@ -64,6 +64,7 @@ impl ThisNode {
         self.hash.cyclic_distance(&key)
     }
 
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mingle(&self, bootstrap_addr: &SocketAddr) {
         self.peers.introduce(bootstrap_addr).await;
 
@@ -73,8 +74,9 @@ impl ThisNode {
                     if addr != self.addr && &addr != bootstrap_addr {
                         match Client::introduce(&addr, &self.addr).await {
                             Ok(peers) => {
-                                for peer in peers {
-                                    self.peers.introduce(&peer).await;
+                                self.peers.introduce(&addr).await;
+                                for peer_addr in peers {
+                                    self.peers.introduce(&peer_addr).await;
                                 }
                             }
                             Err(err) => {
@@ -93,20 +95,19 @@ impl ThisNode {
         };
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn introduction_rcvd(
         self: &Arc<Self>,
         sender_addr: SocketAddr,
     ) -> Result<Vec<OtherNode>, IntroductionError> {
         let (old_peers, new_peer) = self.peers.introduce(&sender_addr).await;
-        info!(peer=?new_peer, "New peer just dropped");
+        debug!(peer=?new_peer, "New peer found");
 
         let self_clone = Arc::clone(self);
         let new_peer_clone = new_peer.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await; // FIXME: do retries instead of this
-            info!("Moving values to {:?}", new_peer_clone);
+            tokio::time::sleep(Duration::from_millis(500)).await; // FIXME: do retries instead of this
             self_clone.move_values_to_peer(&new_peer_clone).await;
             self_clone.clean_secondary_store(&new_peer_clone).await;
             self_clone.clean_secondants(&new_peer_clone).await;
@@ -133,9 +134,8 @@ impl ThisNode {
             })
             .collect::<Vec<_>>();
 
-        info!("cleaning secondary store: {:?}", to_remove);
-
         for (addr, key) in to_remove {
+            info!("cleaning out of secondary store: {:?}", (addr, key));
             secondary_store.get_mut(&addr).map(|store| {
                 store.remove(&key);
             });
@@ -151,11 +151,12 @@ impl ThisNode {
             .collect::<Vec<_>>();
 
         for (key, _) in to_remove {
-            secondants.remove(&key);
+            let old_secondant = secondants.remove(&key);
+            info!("Removed {:?} as secondant for {}", old_secondant, key);
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) {
         let primary_store = self.primary_store.read().await;
         let values_to_move = primary_store
@@ -165,13 +166,13 @@ impl ThisNode {
             .cloned()
             .collect::<Vec<_>>();
 
+        if values_to_move.len() == 0 {
+            return;
+        }
 
         drop(primary_store); // don't hold the lock while we wait for the other node.
                              // this allows other nodes that don't known about
                              // the new peer yet still get the value here in the meantime
-        if values_to_move.len() == 0 {
-            return;
-        }
 
         info!("Values to move: {:?}", values_to_move);
 
@@ -197,7 +198,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn move_values_rcvd(
         self: &Arc<Self>,
         values: Vec<String>,
@@ -219,10 +220,10 @@ impl ThisNode {
                     warn!(value=?value, "Got value that was not meant for me, rerouting.");
                     let value = value.clone();
                     // FIXME: when this happens (succesfully or unsuccesfully) the value is not removed in the calling node.
-                    tokio::spawn(async move { Client::store(&peer.addr, value).await });
+                    tokio::spawn(async move { Client::store(&peer.addr, value, None).await });
                 }
                 None => {
-                    self.store_here(&key, value).await;
+                    self.store_here(&key, value, None).await;
                     stored_keys.push(key);
                 }
             };
@@ -231,11 +232,14 @@ impl ThisNode {
         Ok(stored_keys)
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn store_rcvd(
         self: &Arc<Self>,
         value: String,
+        corpse: Option<SocketAddr>,
     ) -> Result<(Key, SocketAddr), StoreError> {
+        self.handle_possible_corpse(corpse).await;
+
         let key = Key::hash(&value);
 
         match self
@@ -243,30 +247,31 @@ impl ThisNode {
             .nearest_to_but_less_than(&key, &self.distance_to(&key))
             .await
         {
-            Some(peer) => self.delegate_store(peer, value).await,
+            Some(peer) => self.delegate_store(peer, value, corpse).await,
             None => {
-                self.store_here(&key, value).await;
+                self.store_here(&key, value, None).await;
                 Ok((key, self.addr))
             }
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn handle_connection_failed(self: &Arc<Self>, peer: OtherNode) -> CommonError {
-        warn!("A body was found!");
+        error!(dead_peer=?peer, "Connection to peer failed.");
         // self.mark_dead(&peer).await; // FIXME: causes a typecheck loop
         // FIXME: is there more we can try here? wait for the secondary to notice
         // this death or try to find the secondary ourselves?
         CommonError::Unavailable
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn delegate_store(
         self: &Arc<Self>,
         peer: OtherNode,
         value: String,
+        corpse: Option<SocketAddr>,
     ) -> Result<(Key, SocketAddr), StoreError> {
-        match Client::store(&peer.addr, value).await {
+        match Client::store(&peer.addr, value, corpse).await {
             Ok(res) => Ok(res),
             Err(ClientError::ConnectionFailed(_)) => Err(StoreError::Common(
                 self.handle_connection_failed(peer).await,
@@ -280,24 +285,39 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
-    async fn store_here(self: &Arc<Self>, key: &Key, value: String) -> () {
+    async fn store_in_primary(self: &Arc<Self>, key: &Key, value: String) -> Option<String> {
         let mut primary_store = self.primary_store.write().await;
-        let inserted = primary_store.insert(key.clone(), value.clone());
+        primary_store.insert(key.clone(), value)
+    }
+
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn store_here(
+        self: &Arc<Self>,
+        key: &Key,
+        value: String,
+        corpse: Option<&OtherNode>,
+    ) -> () {
+        let inserted = self.store_in_primary(key, value.clone()).await;
 
         if inserted.is_none() {
             let self_clone = Arc::clone(self);
             let value_clone = value.clone();
+            let corpse_clone = corpse.cloned();
             tokio::task::spawn(async move {
                 self_clone
-                    .store_in_secondants(value_clone, REDUNDANCY)
+                    .store_in_secondants(value_clone, REDUNDANCY, corpse_clone.as_ref())
                     .await;
             });
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
-    async fn store_in_secondants(self: &Arc<Self>, value: String, n: usize) {
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn store_in_secondants(
+        self: &Arc<Self>,
+        value: String,
+        n: usize,
+        corpse: Option<&OtherNode>,
+    ) {
         let tasks: Vec<_> = self
             .peers
             .pick(n)
@@ -307,8 +327,17 @@ impl ThisNode {
                 let value = value.clone();
                 let primary_holder = self.addr.clone();
                 let peer_clone = peer.clone();
+                let corpse_clone = corpse.cloned();
                 tokio::spawn(async move {
-                    match Client::store_secondary(&peer_clone.addr, value, &primary_holder).await {
+                    info!("Chose {:?} as secondant for {}", &peer, &value);
+                    match Client::store_secondary(
+                        &peer_clone.addr,
+                        value,
+                        &primary_holder,
+                        corpse_clone.map(|p| p.addr),
+                    )
+                    .await
+                    {
                         Ok(key) => Ok((peer_clone, key)),
                         Err(err) => Err(err),
                     }
@@ -327,7 +356,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn store_as_secondant(&self, peer: OtherNode, key: Key) {
         let mut secondants = self.secondants.write().await;
         let replaced = secondants.insert(key, peer.clone());
@@ -340,17 +369,20 @@ impl ThisNode {
                 )
             }
             None => {
-                info!("Stored {:?} as secondant for {:?} ", key, peer.addr);
+                info!("Stored {} as secondant for {:?} ", peer.addr, key);
             }
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn secondary_store_rcvd(
         self: &Arc<Self>,
         value: String,
         primary_holder: SocketAddr,
+        corpse_addr: Option<SocketAddr>,
     ) -> Result<Key, StoreError> {
+        self.handle_possible_corpse(corpse_addr).await;
+
         let mut secondary_store = self.secondary_store.write().await;
 
         let key = Key::hash(&value);
@@ -363,11 +395,12 @@ impl ThisNode {
         Ok(key)
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<(String, SocketAddr), GetError> {
         let primary_store = self.primary_store.read().await;
 
         if let Some(value) = primary_store.get(&key) {
+            debug!("I have it!");
             return Ok((value.clone(), self.addr));
         }
 
@@ -382,12 +415,13 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self), fields(port=?self.addr))]
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn delegate_get(
         self: &Arc<Self>,
         peer: OtherNode,
         key: Key,
     ) -> Result<(String, SocketAddr), GetError> {
+        info!("Delegating get");
         match Client::get(&peer.addr, &key).await {
             Ok(res) => Ok(res),
             Err(ClientError::ConnectionFailed(_)) => {
@@ -412,8 +446,12 @@ impl ThisNode {
         peer.last_seen = Instant::now();
     }
 
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mark_dead(self: &Arc<Self>, dead_peer: &OtherNode) {
+        warn!(this=?self.addr, dead_peer=?dead_peer, "Marking a death");
+        info!("Waiting to acquire peer lock");
         let mut known_peers = self.peers.known_peers.write().await;
+        info!("Peer lock acquired");
 
         if let Some(_) = known_peers.remove_entry(&dead_peer.addr) {
             drop(known_peers);
@@ -434,40 +472,53 @@ impl ThisNode {
                     .redistribute_secondary_data_for(&dead_peer_clone)
                     .await;
             });
-        } // else another call got to it first?
+        } else {
+            info!("I had already forgotten.")
+        }
     }
 
-    async fn redistribute_primary_data_for(self: &Arc<Self>, dead_peer: &OtherNode) {
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn redistribute_primary_data_for(self: &Arc<Self>, corpse: &OtherNode) {
+        info!("Do i have any primary data to redistribute?");
         let secondants = self.secondants.read().await;
 
         let keys_to_find_new_secondants_for: Vec<_> = secondants
             .iter()
-            .filter(|(_, peer)| peer.addr == dead_peer.addr)
+            .filter(|(_, peer)| peer.addr == corpse.addr)
             .map(|(key, _)| key)
             .collect();
 
         drop(&secondants); // we need to drop this immediately so the spawned tasks can write to them later.
 
         let primary_store = self.primary_store.read().await;
+        info!(keys_to_find_new_secondants_for=?keys_to_find_new_secondants_for);
 
         for key in keys_to_find_new_secondants_for {
+            info!("Finding new secondants for {}", key);
             let self_clone = Arc::clone(self);
             let value = primary_store
                 .get(&key)
                 .expect("Key in secondants was not in primary_store")
                 .clone();
 
+            let corpse_clone = corpse.clone();
+
             tokio::spawn(async move {
-                self_clone.store_in_secondants(value, 1).await;
+                self_clone
+                    .store_in_secondants(value, 1, Some(&corpse_clone))
+                    .await;
             });
         }
     }
 
-    async fn redistribute_secondary_data_for(self: &Arc<Self>, dead_peer: &OtherNode) {
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn redistribute_secondary_data_for(self: &Arc<Self>, corpse: &OtherNode) {
         let secondary_store = self.secondary_store.read().await;
 
+        info!("redistributing secondary data for {:?}", corpse);
+
         let tasks: Vec<JoinHandle<Result<(Key, SocketAddr), StoreError>>> =
-            match secondary_store.get(&dead_peer.addr) {
+            match secondary_store.get(&corpse.addr) {
                 Some(store) => {
                     // drop(secondary_store)
                     store
@@ -475,25 +526,40 @@ impl ThisNode {
                         .map(|(_, value)| {
                             let value = value.clone();
                             let self_clone = Arc::clone(self);
+                            let corpse_addr = corpse.addr.clone();
 
-                            // we need the value to end up somewhere in the network, so
-                            // we can just pretend we received a store call for it.
-                            tokio::spawn(async move { self_clone.store_rcvd(value).await })
+                            tokio::spawn(async move {
+                                //     // self_clone.store_rcvd(value, Some(corpse_addr)).await // TYPECHECK LOOP ;_;
+                                if let Some(freshest_peer) = self_clone.peers.freshest().await {
+                                    self_clone
+                                        .delegate_store(freshest_peer, value, Some(corpse_addr))
+                                        .await
+                                } else {
+                                    warn!(
+                                    "All alone. I can store {} myself, I guess, it's ok. I'm fine.",
+                                    value
+                                );
+                                    let key = &Key::hash(&value);
+                                    self_clone.store_in_primary(key, value).await;
+                                    return Ok((key.clone(), self_clone.addr));
+                                }
+                            })
                         })
                         .collect()
                 }
                 None => {
-                    info!("Not holding any secondary data for {:?}", dead_peer);
+                    debug!("Not holding any secondary data for {:?}", corpse);
                     return;
                 }
             };
+
         drop(secondary_store);
 
         for task in tasks {
             match task.await.expect("join error?!") {
                 Ok((key, peer)) => {
                     let mut secondary_store = self.secondary_store.write().await;
-                    let store = secondary_store.get_mut(&dead_peer.addr);
+                    let store = secondary_store.get_mut(&corpse.addr);
                     match store {
                         Some(store) => {
                             let val = store.remove(&key);
@@ -509,6 +575,20 @@ impl ThisNode {
                 Err(err) => {
                     error!("Restoring values from secondary failed: {:?}", err);
                 }
+            }
+        }
+    }
+
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn handle_possible_corpse(self: &Arc<Self>, corpse_addr: Option<SocketAddr>) {
+        if let Some(corpse_addr) = corpse_addr {
+            warn!(corpse=?corpse_addr, "Marking corpse as dead thanks to context from other node");
+            let peers = self.peers.known_peers.read().await;
+            if let Some(corpse) = peers.get(&corpse_addr).cloned() {
+                drop(peers);
+                self.mark_dead(&corpse).await;
+            } else {
+                warn!("Could not find corpse in peers");
             }
         }
     }
@@ -529,8 +609,19 @@ impl Peers {
             .max_by_key(|p| Instant::now() - p.last_seen)
     }
 
-    pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
+    pub async fn freshest(&self) -> Option<OtherNode> {
         let known_peers = self.known_peers.read().await;
+
+        known_peers
+            .values()
+            .cloned()
+            .min_by_key(|p| Instant::now() - p.last_seen)
+    }
+
+    pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
+        debug!("attempting to acquire known_peers lock");
+        let known_peers = self.known_peers.read().await;
+        debug!("known_peers lock acquired!");
 
         known_peers
             .values()

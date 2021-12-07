@@ -2,7 +2,7 @@ use crate::peering::client::Client;
 use crate::peering::this_node::ThisNode;
 use std::sync::Arc;
 use tokio::time::Duration;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, warn, info};
 
 pub fn spawn_health_check(node: &Arc<ThisNode>, interval: Duration) {
     let node = Arc::clone(&node);
@@ -33,11 +33,9 @@ pub async fn check_single_peer(node: &Arc<ThisNode>) {
 
     match Client::health_check(&peer.addr).await {
         Ok(()) => {
-            debug!(node=?node.addr, peer=?peer, "Alive and well");
             node.mark_alive(&peer).await
         }
         Err(_) => {
-            warn!(node=?node.addr, dead_peer=?peer, "A body was found!");
             node.mark_dead(&peer).await
         }
     }

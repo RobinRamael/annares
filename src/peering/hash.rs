@@ -72,7 +72,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         if N::to_usize() < 32 {
-            write!(f, "...{}", self.as_hex_string())
+            write!(f, "{}", self.as_hex_string())
         } else {
             write!(f, "{}", shorten(&self.as_hex_string()))
         }

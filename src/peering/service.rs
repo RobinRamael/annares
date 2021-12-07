@@ -105,9 +105,16 @@ impl NodeService for ThisNodeService {
 
     #[instrument(skip(request, self))]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
-        let StoreRequest { value, .. } = request.into_inner();
+        let StoreRequest { value, corpse, .. } = request.into_inner();
 
-        match self.node.store_rcvd(value).await {
+        let parsed_corpse = corpse
+            .map(|p| {
+                p.parse()
+                    .or(Err(invalid_argument("Malformed corpse address")))
+            })
+            .transpose()?;
+
+        match self.node.store_rcvd(value, parsed_corpse).await {
             Ok((key, stored_in)) => Ok(Response::new(StoreReply {
                 key: key.as_hex_string(),
                 stored_in: stored_in.to_string(),
@@ -124,14 +131,25 @@ impl NodeService for ThisNodeService {
         let SecondaryStoreRequest {
             value,
             primary_holder,
+            corpse,
         } = request.into_inner();
 
-        let parsed_addr = primary_holder.parse().or(Err(Status::new(
-            Code::InvalidArgument,
-            "Malformed primary holder address",
-        )))?;
+        let parsed_addr = primary_holder
+            .parse()
+            .or(Err(invalid_argument("Malformed primary holder address")))?;
 
-        match self.node.secondary_store_rcvd(value, parsed_addr).await {
+        let parsed_corpse = corpse
+            .map(|p| {
+                p.parse()
+                    .or(Err(invalid_argument("Malformed corpse address")))
+            })
+            .transpose()?;
+
+        match self
+            .node
+            .secondary_store_rcvd(value, parsed_addr, parsed_corpse)
+            .await
+        {
             Ok(key) => Ok(Response::new(SecondaryStoreReply {
                 key: key.as_hex_string(),
             })),
@@ -168,6 +186,7 @@ impl NodeService for ThisNodeService {
         let primary_store = self.node.primary_store.read().await;
         let secondary_store = self.node.secondary_store.read().await;
         let secondants = self.node.secondants.read().await;
+        let peers = self.node.peers.known_peers.read().await;
 
         let ser_prim_store = primary_store.iter().map(KeyValuePair::from).collect();
         let ser_sec_store = secondary_store
@@ -175,11 +194,13 @@ impl NodeService for ThisNodeService {
             .map(SecondaryStoreEntry::from)
             .collect();
         let ser_secs = secondants.iter().map(Secondant::from).collect();
+        let ser_peers = peers.values().map(|p| p.into()).collect();
 
         Ok(Response::new(GetStatusReply {
             primary_store: ser_prim_store,
             secondary_store: ser_sec_store,
             secondants: ser_secs,
+            peers: ser_peers,
         }))
     }
 
@@ -242,4 +263,8 @@ impl From<(&SocketAddr, &HashMap<Key, String>)> for SecondaryStoreEntry {
                 .collect(),
         }
     }
+}
+
+fn invalid_argument(s: &str) -> Status {
+    Status::new(Code::InvalidArgument, s)
 }

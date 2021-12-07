@@ -60,6 +60,7 @@ message HealthCheckReply { }
 
 message StoreRequest {
   string value = 1;
+  optional string corpse = 2;
 }
 
 message StoreReply {
@@ -70,6 +71,7 @@ message StoreReply {
 message SecondaryStoreRequest {
   string value = 1;
   string primary_holder = 2;
+  optional string corpse = 3;
 }
 
 message SecondaryStoreReply {
@@ -118,6 +120,7 @@ message GetStatusReply {
   repeated KeyValuePair primary_store = 1;
   repeated SecondaryStoreEntry secondary_store = 2;
   repeated Secondant secondants = 3;
+  repeated KnownPeer peers = 4;
 }
 
 message ShutDownRequest {}

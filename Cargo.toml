@@ -21,10 +21,14 @@ generic-array = "0.14.4"
 hex = "0.4.3"
 futures = "0.3.18"
 tracing = "0.1.29"
-tracing-subscriber = "0.3.3"
+# tracing-subscriber = "0.3.3"
 tracing-appender = "0.2.0"
 rand = "0.6.1"
 tokio-retry = "0.3"
+
+[dependencies.tracing-subscriber]
+features = ["std", "env-filter"]
+version = "0.3.3"
 
 [build-dependencies]
 tonic-build = "0.6"

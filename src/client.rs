@@ -67,7 +67,7 @@ enum Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::from_args() {
-        Cli::StoreValue(cfg) => match Client::store(&cfg.base.peer, cfg.value).await {
+        Cli::StoreValue(cfg) => match Client::store(&cfg.base.peer, cfg.value, None).await {
             Ok((key, addr)) => {
                 println!("Stored in {}", addr);
                 println!("under {}", key.as_hex_string());
@@ -90,8 +90,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cli::GetStatus(cfg) => match Client::get_status(&cfg.base.peer).await {
-            Ok((primary_store, secondary_store, secondants)) => {
+            Ok((primary_store, secondary_store, secondants, peers)) => {
                 println!("State of {}:\n", cfg.base.peer);
+                print!(" => {} Peers:", peers.len());
+
+                for peer in peers {
+                    print!("{}, ", peer.addr)
+                }
+                println!("\n");
+
                 println!("Primary data:");
 
                 for KeyValuePair { key, value } in primary_store.iter() {
