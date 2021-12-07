@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use tonic::{Request, Status};
-use tracing::error;
+use tracing::{error, warn};
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,
@@ -34,7 +34,7 @@ impl Client {
         match Retry::spawn(retry_strategy, || _connect(addr)).await {
             Ok(grpc_client) => Ok(Client { grpc_client }),
             Err(err) => {
-                error!("Connection to {} completely failed after 3 retries", addr);
+                warn!("Connection to {} completely failed after 3 retries", addr);
                 Err(ClientError::ConnectionFailed(ConnectionFailedError {
                     addr: addr.clone(),
                     cause: err,
