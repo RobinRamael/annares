@@ -3,3 +3,5 @@ target
 words
 .currently_running
 .added_keys
+.history
+rust-toolchain

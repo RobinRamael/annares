@@ -1,28 +1,38 @@
-let
-  # Last updated: 2/26/21. Update as necessary from https://status.nixos.org/...
-  pkgs = import (fetchTarball("https://github.com/NixOS/nixpkgs/archive/660a7744c6557667366db5874742891aa1548620.tar.gz")) {};
-
-  # Rolling updates, not deterministic.
-  # pkgs = import (fetchTarball("channel:nixpkgs-unstable")) {};
-in pkgs.mkShell {
-  buildInputs = [
-    pkgs.cargo
-    pkgs.rustc
-    pkgs.rustfmt
-    pkgs.rustup
-    pkgs.rust-analyzer
-    pkgs.clippy
-
-    # Necessary for the openssl-sys crate:
-    pkgs.openssl
-    pkgs.pkg-config
-
-    pkgs.protobuf
+{ pkgs ? import <nixpkgs> { } }:
+pkgs.mkShell rec {
+  buildInputs = with pkgs; [
+    llvmPackages_latest.llvm
+    llvmPackages_latest.bintools
+    zlib.out
+    rustup
+    xorriso
+    grub2
+    qemu
+    llvmPackages_latest.lld
+    protobuf
+    python3
   ];
-
-
-  # See https://discourse.nixos.org/t/rust-src-not-found-and-other-misadventures-of-developing-rust-on-nixos/11570/3?u=samuela.
-  RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+  RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
+  # https://github.com/rust-lang/rust-bindgen#environment-variables
+  LIBCLANG_PATH =
+    pkgs.lib.makeLibraryPath [ pkgs.llvmPackages_latest.libclang.lib ];
+  HISTFILE = toString ./.history;
+  shellHook = ''
+    export PATH=$PATH:~/.cargo/bin
+    export PATH=$PATH:~/.rustup/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
+  '';
+  # Add libvmi precompiled library to rustc search path
+  RUSTFLAGS = (builtins.map (a: "-L ${a}/lib") [ pkgs.libvmi ]);
+  # Add libvmi, glibc, clang, glib headers to bindgen search path
+  BINDGEN_EXTRA_CLANG_ARGS =
+    # Includes with normal include path
+    (builtins.map (a: ''-I"${a}/include"'') [ pkgs.libvmi pkgs.glibc.dev ])
+    # Includes with special directory paths
+    ++ [
+      ''
+        -I"${pkgs.llvmPackages_latest.libclang.lib}/lib/clang/${pkgs.llvmPackages_latest.libclang.version}/include"''
+      ''-I"${pkgs.glib.dev}/include/glib-2.0"''
+      "-I${pkgs.glib.out}/lib/glib-2.0/include/"
+    ];
 
 }
-
