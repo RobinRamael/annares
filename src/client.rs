@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                println!("\nSecondary stewardships:");
+                println!("\nSecondants");
                 let data_map: HashMap<_, _> = primary_store
                     .into_iter()
                     .map(|kv| {

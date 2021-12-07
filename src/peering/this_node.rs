@@ -1,5 +1,6 @@
 use rand::seq::IteratorRandom;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -13,9 +14,9 @@ use tracing::{debug, error, info, instrument, span, warn, Level};
 
 type Key = crate::peering::hash::Hash;
 
-const REDUNDANCY: usize = 3;
+const REDUNDANCY: usize = 2;
 
-#[derive(Clone)]
+#[derive(Clone, Eq)]
 pub struct OtherNode {
     pub addr: SocketAddr,
     pub key: Key,
@@ -33,6 +34,10 @@ impl OtherNode {
 
     fn distance_to(&self, key: &Key) -> Key {
         self.key.cyclic_distance(&key)
+    }
+
+    fn time_since_last_seen(&self) -> Duration {
+        Instant::now() - self.last_seen
     }
 }
 
@@ -257,7 +262,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn handle_connection_failed(self: &Arc<Self>, peer: OtherNode) -> CommonError {
-        error!(dead_peer=?peer, "Connection to peer failed.");
+        warn!(dead_peer=?peer, "Connection to peer failed.");
         // self.mark_dead(&peer).await; // FIXME: causes a typecheck loop
         // FIXME: is there more we can try here? wait for the secondary to notice
         // this death or try to find the secondary ourselves?
@@ -312,6 +317,57 @@ impl ThisNode {
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
+    async fn pick_secondants(self: &Arc<Self>, n: usize) -> Vec<OtherNode> {
+        let secondants = self.secondants.read().await;
+        let peers = self.peers.known_peers.read().await;
+
+        let mut secondant_counts: HashMap<OtherNode, u64> = HashMap::new();
+
+        for peer in secondants.values().cloned() {
+            let count = secondant_counts.entry(peer).or_insert(0);
+            *count += 1;
+        }
+
+        info!("secondants: {:?}", secondants.values().collect::<Vec<_>>());
+        info!("counts: {:?}", secondant_counts);
+
+        let peer_counts: Vec<_> = peers
+            .values()
+            .map(|p| (p, secondant_counts.get(p).cloned().unwrap_or(0)))
+            .collect();
+
+        info!("peer_counts: {:?}", peer_counts);
+
+        let mut lowest = HashSet::new();
+
+        for _ in 0..n {
+            let next_lowest = peer_counts
+                .iter()
+                .filter(|tup| !lowest.contains(tup))
+                .min_by_key(|(p, c)| (c, p.time_since_last_seen()));
+
+            if let Some(next_lowest) = next_lowest {
+                lowest.insert(next_lowest);
+            } else {
+                break;
+            }
+        }
+
+        let mut lowest_vec: Vec<_> = lowest.into_iter().cloned().collect();
+        lowest_vec.sort_by_key(|(p, c)| (c.clone(), p.time_since_last_seen().clone()));
+
+        info!(
+            "lowest n: {:?}",
+            lowest_vec
+                .iter()
+                .map(|(p, c)| (c, p.time_since_last_seen(), p))
+                .collect::<Vec<_>>()
+        );
+
+        lowest_vec.into_iter().map(|(p, c)| p.clone()).collect()
+    }
+
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn store_in_secondants(
         self: &Arc<Self>,
         value: String,
@@ -319,8 +375,7 @@ impl ThisNode {
         corpse: Option<&OtherNode>,
     ) {
         let tasks: Vec<_> = self
-            .peers
-            .pick(n)
+            .pick_secondants(n)
             .await
             .into_iter()
             .map(|peer| {
@@ -328,6 +383,7 @@ impl ThisNode {
                 let primary_holder = self.addr.clone();
                 let peer_clone = peer.clone();
                 let corpse_clone = corpse.cloned();
+                let self_clone = Arc::clone(self);
                 tokio::spawn(async move {
                     info!("Chose {:?} as secondant for {}", &peer, &value);
                     match Client::store_secondary(
@@ -672,6 +728,12 @@ impl Peers {
 impl std::hash::Hash for OtherNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.addr.hash(state);
+    }
+}
+
+impl PartialEq for OtherNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr
     }
 }
 

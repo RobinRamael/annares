@@ -8,18 +8,18 @@ function runfirst() {
 
     echo cargo build
     cargo build
-    echo target/debug/node $1 --check-interval $CHECK_INTERVAL &
-    target/debug/node $1 --check-interval $CHECK_INTERVAL &
+    echo annares-node $1 --check-interval $CHECK_INTERVAL &
+    annares-node $1 --check-interval $CHECK_INTERVAL &
 }
 
 function run() {
-    echo target/debug/node $1 --peer "[::1]:$2" --check-interval $CHECK_INTERVAL
-    target/debug/node $1 --peer "[::1]:$2"  --check-interval $CHECK_INTERVAL &
+    echo annares-node $1 --peer "[::1]:$2" --check-interval $CHECK_INTERVAL
+    annares-node $1 --peer "[::1]:$2"  --check-interval $CHECK_INTERVAL &
 }
 
 function runs {
     echo killing all nodes
-    pgrep -f target/debug/node | xargs kill
+    pgrep -f annares-node | xargs kill
     rm .currently_running
     rm .added_keys
     runfirst 5001;
