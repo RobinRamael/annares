@@ -14,8 +14,6 @@ use peering::this_node::ThisNode;
 use peering::utils;
 use tokio::time::Duration;
 
-// use ;
-
 #[derive(StructOpt, Debug)]
 struct Cli {
     port: u16,
@@ -23,8 +21,11 @@ struct Cli {
     #[structopt(short = "p", long = "peer")]
     pub bootstrap_peer: Option<SocketAddr>,
 
-    #[structopt(short = "i", long = "--check-interval", default_value = "20")]
+    #[structopt(short = "i", long = "--check-interval", default_value = "2")]
     pub check_interval: u64,
+
+    #[structopt(short = "r", long = "--redundancy", default_value = "3")]
+    pub redundancy: u8,
 }
 
 #[tokio::main]
@@ -37,13 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(non_blocking)
         .init();
 
-
     let args = Cli::from_args();
     info!("Initializing {}", args.port);
 
     let addr = utils::ipv6_loopback_socketaddr(args.port);
 
-    let this_node = Arc::new(ThisNode::new(addr));
+    let this_node = Arc::new(ThisNode::new(addr, args.redundancy));
 
     if let Some(bootstrap_peer) = args.bootstrap_peer {
         info!("Mingling with {}...", bootstrap_peer);

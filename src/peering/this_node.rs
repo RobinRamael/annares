@@ -14,8 +14,6 @@ use tracing::{debug, error, info, instrument, span, warn, Level};
 
 type Key = crate::peering::hash::Hash;
 
-const REDUNDANCY: usize = 2;
-
 #[derive(Clone, Eq)]
 pub struct OtherNode {
     pub addr: SocketAddr,
@@ -46,15 +44,17 @@ pub struct ThisNode {
     pub addr: SocketAddr,
     hash: Key,
     pub peers: Peers,
+    pub redundancy: u8,
     pub primary_store: Arc<RwLock<HashMap<Key, String>>>,
     pub secondary_store: Arc<RwLock<HashMap<SocketAddr, HashMap<Key, String>>>>,
     pub secondants: Arc<RwLock<HashMap<Key, OtherNode>>>,
 }
 
 impl ThisNode {
-    pub fn new(addr: SocketAddr) -> Self {
+    pub fn new(addr: SocketAddr, redundancy: u8) -> Self {
         ThisNode {
             addr,
+            redundancy,
             hash: Key::hash(&addr.to_string()),
             peers: Peers {
                 known_peers: Arc::new(RwLock::new(HashMap::new())),
@@ -310,14 +310,14 @@ impl ThisNode {
             let corpse_clone = corpse.cloned();
             tokio::task::spawn(async move {
                 self_clone
-                    .store_in_secondants(value_clone, REDUNDANCY, corpse_clone.as_ref())
+                    .store_in_secondants(value_clone, self_clone.redundancy, corpse_clone.as_ref())
                     .await;
             });
         }
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
-    async fn pick_secondants(self: &Arc<Self>, n: usize) -> Vec<OtherNode> {
+    async fn pick_secondants(self: &Arc<Self>, n: u8) -> Vec<OtherNode> {
         let secondants = self.secondants.read().await;
         let peers = self.peers.known_peers.read().await;
 
@@ -371,7 +371,7 @@ impl ThisNode {
     async fn store_in_secondants(
         self: &Arc<Self>,
         value: String,
-        n: usize,
+        n: u8,
         corpse: Option<&OtherNode>,
     ) {
         let tasks: Vec<_> = self

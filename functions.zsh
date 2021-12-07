@@ -8,13 +8,13 @@ function runfirst() {
 
     echo cargo build
     cargo build
-    echo annares-node $1 --check-interval $CHECK_INTERVAL &
-    annares-node $1 --check-interval $CHECK_INTERVAL &
+    echo annares-node $1 
+    annares-node $1 &
 }
 
 function run() {
-    echo annares-node $1 --peer "[::1]:$2" --check-interval $CHECK_INTERVAL
-    annares-node $1 --peer "[::1]:$2"  --check-interval $CHECK_INTERVAL &
+    echo annares-node $1 --peer "[::1]:$2" 
+    annares-node $1 --peer "[::1]:$2"  &
 }
 
 function runs {
