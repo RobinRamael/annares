@@ -19,7 +19,7 @@ function run() {
 
 function runs {
     echo killing all nodes
-    pkill node
+    pgrep -f target/debug/node | xargs kill
     rm .currently_running
     rm .added_keys
     runfirst 5001;
