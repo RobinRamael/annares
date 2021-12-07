@@ -13,7 +13,7 @@ use tracing::{debug, error, info, instrument, span, warn, Level};
 
 type Key = crate::peering::hash::Hash;
 
-const REDUNDANCY: usize = 1;
+const REDUNDANCY: usize = 3;
 
 #[derive(Clone)]
 pub struct OtherNode {

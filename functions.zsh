@@ -93,6 +93,17 @@ function debug {
     sleep 3
     enter_words $2 $3;
     client status -p ":5001";
-    echo "press enter to kill 5001";
-    read; killnode 5001;
+    echo "press enter to kill $4 random nodes";
+    read;
+
+    for i in {0..$4}; do
+        killrandomly
+    done
+
+}
+
+function killrandomly {
+    peer=$(shuf -n 1 .currently_running)
+    echo killing $peer
+    killnode $peer
 }

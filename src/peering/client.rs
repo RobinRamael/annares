@@ -3,21 +3,43 @@ use crate::peering::grpc::node_service_client::NodeServiceClient;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
-use std::net::{AddrParseError, SocketAddr};
+use std::net::SocketAddr;
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
 use tonic::{Request, Status};
+use tracing::error;
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,
 }
 
+async fn _connect(
+    addr: &SocketAddr,
+) -> Result<NodeServiceClient<tonic::transport::Channel>, tonic::transport::Error> {
+    match NodeServiceClient::connect(utils::build_grpc_url(&addr)).await {
+        Ok(res) => Ok(res),
+        Err(err) => {
+            warn!("Connection to {} failed, retrying...", addr);
+            Err(err)
+        }
+    }
+}
+
 impl Client {
     pub async fn connect(addr: &SocketAddr) -> Result<Self, ClientError> {
-        match NodeServiceClient::connect(utils::build_grpc_url(&addr)).await {
+        let retry_strategy = ExponentialBackoff::from_millis(10)
+            .map(jitter) // add jitter to delays
+            .take(3); // limit to 3 retries
+
+        match Retry::spawn(retry_strategy, || _connect(addr)).await {
             Ok(grpc_client) => Ok(Client { grpc_client }),
-            Err(err) => Err(ClientError::ConnectionFailed(ConnectionFailedError {
-                addr: addr.clone(),
-                cause: err,
-            })),
+            Err(err) => {
+                error!("Connection to {} completely failed after 3 retries", addr);
+                Err(ClientError::ConnectionFailed(ConnectionFailedError {
+                    addr: addr.clone(),
+                    cause: err,
+                }))
+            }
         }
     }
 
