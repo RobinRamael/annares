@@ -1,11 +1,11 @@
+#![allow(dead_code)]
 use std::net::SocketAddr;
 use structopt::StructOpt;
 
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::*;
 use tracing_appender;
 use tracing_subscriber;
-use tracing_subscriber::prelude::*;
 
 mod peering;
 use peering::health_check::spawn_health_check;
@@ -30,7 +30,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file_appender = tracing_appender::rolling::daily("/tmp/logs", "annares.log");
+    let file_appender = tracing_appender::rolling::never("/tmp/logs", "annares.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::filter::EnvFilter::from_default_env())

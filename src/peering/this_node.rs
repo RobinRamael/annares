@@ -753,8 +753,10 @@ impl Peers {
         (old_peers, new_peer)
     }
 
+    #[instrument(skip(self))]
     pub async fn len(&self) -> usize {
-        let mut peers = self.known_peers.write().await;
+        let peers = self.known_peers.read().await;
+
         peers.len()
     }
 }

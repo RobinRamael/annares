@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use tonic::{Request, Status};
-use tracing::{error, warn};
+use tracing::*;
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,

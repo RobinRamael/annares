@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod client;
 mod errors;
 pub mod grpc;

@@ -1,4 +1,3 @@
-use itertools::join;
 use std::collections::HashMap;
 use std::net::{AddrParseError, SocketAddr};
 use structopt::StructOpt;
