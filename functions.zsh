@@ -44,8 +44,9 @@ function enter_data {
 function enter_random_words {
 	echo adding $1 words
 	for value in $(shuf -n $1 words); do
-		echo $value
-		client store $value -p ":$(shuf -n 1 .currently_running)" | grep under | cut -f2 -d' ' >>.added_keys
+		node=$(shuf -n 1 .currently_running)
+		echo "$value from $node"
+		client store $value -p ":$node" | grep under | cut -f2 -d' ' >>.added_keys
 	done
 }
 
@@ -53,8 +54,9 @@ function enter_words {
 	echo adding $2 words starting from $1
 	((n = $1 + $2))
 	for value in $(cat words | sed -n "$1,$n p"); do
-		echo $value
-		client store $value -p ":$(shuf -n 1 .currently_running)" | grep under | cut -f2 -d' ' >>.added_keys
+		node=$(shuf -n 1 .currently_running)
+		echo store "$value using $node"
+		client store $value -p ":$node" | grep under | cut -f2 -d' ' >>.added_keys
 	done
 }
 
@@ -81,20 +83,32 @@ function monitor {
 }
 
 function debug {
+	pgrep -f annares.log | xargs kill
 	rm -rf /tmp/logs/annares.log*
-	touch /tmp/logs/annares.log.2021-12-07
-	touch /tmp/logs/annares.log.2021-12-08
-	cargo check
+	echo "" > /tmp/logs/annares.log
 	runs $1 $2
-	sleep 3
+
+	kitty tail -f /tmp/logs/annares.log &
+	kitty sh -c "tail -f /tmp/logs/annares.log | grep ERROR" &
+
+
+	echo "press enter to enter $4 values"
+	read
 	enter_words $3 $4
-	client status -p ":5001"
+
 	echo "press enter to kill $5 random nodes"
 	read
-
 	for i in {1..$5}; do
 		killrandomly
 	done
+
+	echo "press enter to check"
+	read
+	check
+
+	echo "press enter to close log windows"
+	read
+	pgrep -f annares.log | xargs kill
 
 }
 

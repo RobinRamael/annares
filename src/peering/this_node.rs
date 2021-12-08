@@ -10,7 +10,7 @@ use tokio::time::{Duration, Instant};
 use crate::peering::client::Client;
 use crate::peering::errors::*;
 
-use tracing::{debug, error, info, instrument, span, warn, Level};
+use tracing::*;
 
 type Key = crate::peering::hash::Hash;
 
@@ -136,7 +136,7 @@ impl ThisNode {
                     .map(move |(k, _)| (addr.clone(), k.clone()))
             })
             .flatten()
-            .filter(|(addr, key)| keys.contains(key))
+            .filter(|(_, key)| keys.contains(key))
             .collect::<Vec<_>>();
 
         for (addr, key) in to_remove {
@@ -152,7 +152,7 @@ impl ThisNode {
         let to_remove = secondant_map
             .clone()
             .into_iter()
-            .filter(|(key, peer)| keys.contains(key))
+            .filter(|(key, _)| keys.contains(key))
             .collect::<Vec<_>>();
 
         for (key, _) in to_remove {
@@ -346,8 +346,6 @@ impl ThisNode {
             .map(|p| (p, secondant_counts.get(p).cloned().unwrap_or(0)))
             .collect();
 
-        info!("peer_counts: {:?}", peer_counts);
-
         let mut lowest = HashSet::new();
 
         for _ in 0..n {
@@ -366,7 +364,7 @@ impl ThisNode {
         let mut lowest_vec: Vec<_> = lowest.into_iter().cloned().collect();
         lowest_vec.sort_by_key(|(p, c)| (c.clone(), p.time_since_last_seen().clone()));
 
-        lowest_vec.into_iter().map(|(p, c)| p.clone()).collect()
+        lowest_vec.into_iter().map(|(p, _)| p.clone()).collect()
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
@@ -503,6 +501,7 @@ impl ThisNode {
         }
     }
 
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mark_alive(&self, peer: &OtherNode) {
         let mut known_peers = self.peers.known_peers.write().await;
 
@@ -700,6 +699,7 @@ impl Peers {
             .min_by_key(|p| Instant::now() - p.last_seen)
     }
 
+    #[instrument(skip(self))]
     pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
         debug!("attempting to acquire known_peers lock");
         let known_peers = self.known_peers.read().await;
@@ -711,6 +711,7 @@ impl Peers {
             .min_by_key(|peer| peer.distance_to(key))
     }
 
+    #[instrument(skip(self))]
     pub async fn nearest_to_but_less_than(
         &self,
         key: &Key,
@@ -725,6 +726,7 @@ impl Peers {
         })
     }
 
+    #[instrument(skip(self))]
     pub async fn pick(&self, n: usize) -> Vec<OtherNode> {
         let peers = self.known_peers.read().await;
 
@@ -738,6 +740,7 @@ impl Peers {
     }
 
     // returns the nodes before the new one was added!
+    #[instrument(skip(self))]
     pub async fn introduce(&self, addr: &SocketAddr) -> (Vec<OtherNode>, OtherNode) {
         let mut peers = self.known_peers.write().await;
 
