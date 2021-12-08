@@ -2,7 +2,7 @@ use crate::peering::errors::*;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::this_node::{OtherNode, ThisNode};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 use std::sync::Arc;
@@ -185,7 +185,7 @@ impl NodeService for ThisNodeService {
     ) -> Result<Response<GetStatusReply>, Status> {
         let primary_store = self.node.primary_store.read().await;
         let secondary_store = self.node.secondary_store.read().await;
-        let secondants = self.node.secondants.read().await;
+        let secondant_map = self.node.secondant_map.read().await;
         let peers = self.node.peers.known_peers.read().await;
 
         let ser_prim_store = primary_store.iter().map(KeyValuePair::from).collect();
@@ -193,7 +193,10 @@ impl NodeService for ThisNodeService {
             .iter()
             .map(SecondaryStoreEntry::from)
             .collect();
-        let ser_secs = secondants.iter().map(Secondant::from).collect();
+        let ser_secs = secondant_map
+            .iter()
+            .map(SecondantStoreEntry::from)
+            .collect();
         let ser_peers = peers.values().map(|p| p.into()).collect();
 
         Ok(Response::new(GetStatusReply {
@@ -248,6 +251,19 @@ impl From<&OtherNode> for KnownPeer {
     fn from(peering_node: &OtherNode) -> Self {
         KnownPeer {
             addr: peering_node.addr.to_string(),
+        }
+    }
+}
+
+impl From<(&Key, &HashSet<OtherNode>)> for SecondantStoreEntry {
+    fn from((key, peers): (&Key, &HashSet<OtherNode>)) -> Self {
+        SecondantStoreEntry {
+            key: key.as_hex_string(),
+            addrs: peers
+                .clone()
+                .into_iter()
+                .map(|p| p.addr.to_string())
+                .collect(),
         }
     }
 }

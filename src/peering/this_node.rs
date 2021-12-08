@@ -47,7 +47,7 @@ pub struct ThisNode {
     pub redundancy: u8,
     pub primary_store: Arc<RwLock<HashMap<Key, String>>>,
     pub secondary_store: Arc<RwLock<HashMap<SocketAddr, HashMap<Key, String>>>>,
-    pub secondants: Arc<RwLock<HashMap<Key, OtherNode>>>,
+    pub secondant_map: Arc<RwLock<HashMap<Key, HashSet<OtherNode>>>>,
 }
 
 impl ThisNode {
@@ -61,7 +61,7 @@ impl ThisNode {
             },
             primary_store: Arc::new(RwLock::new(HashMap::new())),
             secondary_store: Arc::new(RwLock::new(HashMap::new())),
-            secondants: Arc::new(RwLock::new(HashMap::new())),
+            secondant_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -112,16 +112,19 @@ impl ThisNode {
         let new_peer_clone = new_peer.clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await; // FIXME: do retries instead of this
-            self_clone.move_values_to_peer(&new_peer_clone).await;
-            self_clone.clean_secondary_store(&new_peer_clone).await;
-            self_clone.clean_secondants(&new_peer_clone).await;
+            // tokio::time::sleep(Duration::from_millis(500)).await; // FIXME: do retries instead of this
+            let moved_keys = self_clone.move_values_to_peer(&new_peer_clone).await;
+
+            let moved_keys: HashSet<Key> = HashSet::from_iter(moved_keys.into_iter());
+
+            self_clone.clean_secondary_store(&moved_keys).await;
+            self_clone.clean_secondant_map(&moved_keys).await;
         });
 
         Ok(old_peers)
     }
 
-    async fn clean_secondary_store(self: &Arc<Self>, new_peer: &OtherNode) {
+    async fn clean_secondary_store(self: &Arc<Self>, keys: &HashSet<Key>) {
         let mut secondary_store = self.secondary_store.write().await;
 
         let to_remove = secondary_store
@@ -133,10 +136,7 @@ impl ThisNode {
                     .map(move |(k, _)| (addr.clone(), k.clone()))
             })
             .flatten()
-            // if the new peer is closer than the one we are secondant for:
-            .filter(|(addr, key)| {
-                new_peer.distance_to(key) < Key::hash(&addr.to_string()).cyclic_distance(key)
-            })
+            .filter(|(addr, key)| keys.contains(key))
             .collect::<Vec<_>>();
 
         for (addr, key) in to_remove {
@@ -147,22 +147,22 @@ impl ThisNode {
         }
     }
 
-    async fn clean_secondants(self: &Arc<Self>, new_peer: &OtherNode) {
-        let mut secondants = self.secondants.write().await;
-        let to_remove = secondants
+    async fn clean_secondant_map(self: &Arc<Self>, keys: &HashSet<Key>) {
+        let mut secondant_map = self.secondant_map.write().await;
+        let to_remove = secondant_map
             .clone()
             .into_iter()
-            .filter(|(key, peer)| new_peer.distance_to(key) < peer.key.cyclic_distance(key))
+            .filter(|(key, peer)| keys.contains(key))
             .collect::<Vec<_>>();
 
         for (key, _) in to_remove {
-            let old_secondant = secondants.remove(&key);
+            let old_secondant = secondant_map.remove(&key);
             info!("Removed {:?} as secondant for {}", old_secondant, key);
         }
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
-    async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) {
+    async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) -> Vec<Key> {
         let primary_store = self.primary_store.read().await;
         let values_to_move = primary_store
             .iter()
@@ -172,7 +172,7 @@ impl ThisNode {
             .collect::<Vec<_>>();
 
         if values_to_move.len() == 0 {
-            return;
+            return vec![];
         }
 
         drop(primary_store); // don't hold the lock while we wait for the other node.
@@ -185,7 +185,7 @@ impl ThisNode {
             Ok(keys) => {
                 let mut primary_store = self.primary_store.write().await;
 
-                for key in keys {
+                for key in &keys {
                     let removed_value = primary_store.remove(&key);
                     match removed_value {
                         Some(removed_value) => {
@@ -196,9 +196,11 @@ impl ThisNode {
                         }
                     }
                 }
+                return keys;
             }
             Err(err) => {
                 error!("Failed to move values: {:?}", err);
+                return vec![];
             }
         }
     }
@@ -276,6 +278,7 @@ impl ThisNode {
         value: String,
         corpse: Option<SocketAddr>,
     ) -> Result<(Key, SocketAddr), StoreError> {
+        info!("Delegating store");
         match Client::store(&peer.addr, value, corpse).await {
             Ok(res) => Ok(res),
             Err(ClientError::ConnectionFailed(_)) => Err(StoreError::Common(
@@ -310,7 +313,11 @@ impl ThisNode {
             let corpse_clone = corpse.cloned();
             tokio::task::spawn(async move {
                 self_clone
-                    .store_in_secondants(value_clone, self_clone.redundancy, corpse_clone.as_ref())
+                    .store_in_secondant_map(
+                        value_clone,
+                        self_clone.redundancy,
+                        corpse_clone.as_ref(),
+                    )
                     .await;
             });
         }
@@ -318,18 +325,21 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn pick_secondants(self: &Arc<Self>, n: u8) -> Vec<OtherNode> {
-        let secondants = self.secondants.read().await;
+        if n == 0 {
+            return vec![];
+        }
+
+        let secondant_map = self.secondant_map.read().await;
         let peers = self.peers.known_peers.read().await;
 
         let mut secondant_counts: HashMap<OtherNode, u64> = HashMap::new();
 
-        for peer in secondants.values().cloned() {
-            let count = secondant_counts.entry(peer).or_insert(0);
-            *count += 1;
+        for secondants in secondant_map.values() {
+            for peer in secondants.iter().cloned() {
+                let count = secondant_counts.entry(peer).or_insert(0);
+                *count += 1;
+            }
         }
-
-        info!("secondants: {:?}", secondants.values().collect::<Vec<_>>());
-        info!("counts: {:?}", secondant_counts);
 
         let peer_counts: Vec<_> = peers
             .values()
@@ -356,57 +366,69 @@ impl ThisNode {
         let mut lowest_vec: Vec<_> = lowest.into_iter().cloned().collect();
         lowest_vec.sort_by_key(|(p, c)| (c.clone(), p.time_since_last_seen().clone()));
 
-        info!(
-            "lowest n: {:?}",
-            lowest_vec
-                .iter()
-                .map(|(p, c)| (c, p.time_since_last_seen(), p))
-                .collect::<Vec<_>>()
-        );
-
         lowest_vec.into_iter().map(|(p, c)| p.clone()).collect()
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
-    async fn store_in_secondants(
+    async fn store_in_secondant_map(
         self: &Arc<Self>,
         value: String,
-        n: u8,
+        n_secondants: u8,
         corpse: Option<&OtherNode>,
     ) {
-        let tasks: Vec<_> = self
-            .pick_secondants(n)
-            .await
-            .into_iter()
-            .map(|peer| {
-                let value = value.clone();
-                let primary_holder = self.addr.clone();
-                let peer_clone = peer.clone();
-                let corpse_clone = corpse.cloned();
-                let self_clone = Arc::clone(self);
-                tokio::spawn(async move {
-                    info!("Chose {:?} as secondant for {}", &peer, &value);
-                    match Client::store_secondary(
-                        &peer_clone.addr,
-                        value,
-                        &primary_holder,
-                        corpse_clone.map(|p| p.addr),
-                    )
-                    .await
-                    {
-                        Ok(key) => Ok((peer_clone, key)),
-                        Err(err) => Err(err),
-                    }
-                })
-            })
-            .collect();
+        let mut n_secondants_assigned = 0;
 
-        for task in tasks {
-            match task.await.expect("join error?!") {
-                Ok((peer, key)) => self.store_as_secondant(peer, key).await,
-                Err(_) => {
-                    error!("client error when assigning secondant");
-                    // FIXME: restructure this fn so we can retry another node here
+        while n_secondants_assigned < n_secondants {
+            info!(
+                "Picking {} new secondant for {}",
+                n_secondants - n_secondants_assigned,
+                value
+            );
+            let new_secondants = self
+                .pick_secondants(n_secondants - n_secondants_assigned)
+                .await;
+
+            if new_secondants.len() == 0 {
+                warn!(
+                    "All my friends are dead (╥_╥. Can't choose enough secondants for {})",
+                    value
+                );
+                return;
+            }
+
+            let tasks: Vec<_> = new_secondants
+                .into_iter()
+                .map(|peer| {
+                    let value = value.clone();
+                    let primary_holder = self.addr.clone();
+                    let peer_clone = peer.clone();
+                    let corpse_clone = corpse.cloned();
+                    tokio::spawn(async move {
+                        info!("Chose {:?} as secondant for {}", &peer, &value);
+                        match Client::store_secondary(
+                            &peer_clone.addr,
+                            value,
+                            &primary_holder,
+                            corpse_clone.map(|p| p.addr),
+                        )
+                        .await
+                        {
+                            Ok(key) => Ok((peer_clone, key)),
+                            Err(err) => Err(err),
+                        }
+                    })
+                })
+                .collect();
+
+            for task in tasks {
+                match task.await.expect("join error?!") {
+                    Ok((peer, key)) => {
+                        self.store_as_secondant(peer, key).await;
+                        n_secondants_assigned += 1;
+                    }
+                    Err(_) => {
+                        warn!("client error when assigning secondant, will attempt to choose a new one");
+                    }
                 }
             }
         }
@@ -414,20 +436,9 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn store_as_secondant(&self, peer: OtherNode, key: Key) {
-        let mut secondants = self.secondants.write().await;
-        let replaced = secondants.insert(key, peer.clone());
-
-        match replaced {
-            Some(replaced) => {
-                info!(
-                    "Replaced {} as secondant for {} with {} (presumably because it died)",
-                    replaced.addr, key, peer.addr,
-                )
-            }
-            None => {
-                info!("Stored {} as secondant for {:?} ", peer.addr, key);
-            }
-        }
+        let mut secondant_map = self.secondant_map.write().await;
+        let secondants = secondant_map.entry(key).or_insert(HashSet::new());
+        secondants.insert(peer);
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
@@ -536,15 +547,15 @@ impl ThisNode {
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn redistribute_primary_data_for(self: &Arc<Self>, corpse: &OtherNode) {
         info!("Do i have any primary data to redistribute?");
-        let secondants = self.secondants.read().await;
+        let secondant_map = self.secondant_map.read().await;
 
-        let keys_to_find_new_secondants_for: Vec<_> = secondants
+        let keys_to_find_new_secondants_for: Vec<_> = secondant_map
             .iter()
-            .filter(|(_, peer)| peer.addr == corpse.addr)
+            .filter(|(_, secondants)| secondants.contains(corpse))
             .map(|(key, _)| key)
             .collect();
 
-        drop(&secondants); // we need to drop this immediately so the spawned tasks can write to them later.
+        drop(&secondant_map); // we need to drop this immediately so the spawned tasks can write to them later.
 
         let primary_store = self.primary_store.read().await;
         info!(keys_to_find_new_secondants_for=?keys_to_find_new_secondants_for);
@@ -561,7 +572,7 @@ impl ThisNode {
 
             tokio::spawn(async move {
                 self_clone
-                    .store_in_secondants(value, 1, Some(&corpse_clone))
+                    .store_in_secondant_map(value, 1, Some(&corpse_clone))
                     .await;
             });
         }
@@ -573,65 +584,80 @@ impl ThisNode {
 
         info!("redistributing secondary data for {:?}", corpse);
 
-        let tasks: Vec<JoinHandle<Result<(Key, SocketAddr), StoreError>>> =
-            match secondary_store.get(&corpse.addr) {
-                Some(store) => {
-                    // drop(secondary_store)
-                    store
-                        .into_iter()
-                        .map(|(_, value)| {
-                            let value = value.clone();
-                            let self_clone = Arc::clone(self);
-                            let corpse_addr = corpse.addr.clone();
-
-                            tokio::spawn(async move {
-                                //     // self_clone.store_rcvd(value, Some(corpse_addr)).await // TYPECHECK LOOP ;_;
-                                if let Some(freshest_peer) = self_clone.peers.freshest().await {
-                                    self_clone
-                                        .delegate_store(freshest_peer, value, Some(corpse_addr))
-                                        .await
-                                } else {
-                                    warn!(
-                                    "All alone. I can store {} myself, I guess, it's ok. I'm fine.",
-                                    value
-                                );
-                                    let key = &Key::hash(&value);
-                                    self_clone.store_in_primary(key, value).await;
-                                    return Ok((key.clone(), self_clone.addr));
-                                }
-                            })
-                        })
-                        .collect()
-                }
-                None => {
-                    debug!("Not holding any secondary data for {:?}", corpse);
-                    return;
-                }
-            };
-
+        let mut values_to_redistribute: HashSet<String> = match secondary_store.get(&corpse.addr) {
+            Some(store) => HashSet::from_iter(store.values().cloned()),
+            None => {
+                debug!("Not holding any secondary data for {:?}", corpse);
+                return;
+            }
+        };
         drop(secondary_store);
+        let mut tries = 0;
 
-        for task in tasks {
-            match task.await.expect("join error?!") {
-                Ok((key, peer)) => {
-                    let mut secondary_store = self.secondary_store.write().await;
-                    let store = secondary_store.get_mut(&corpse.addr);
-                    match store {
-                        Some(store) => {
-                            let val = store.remove(&key);
-                            if val.is_none() {
-                                warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, key)
+        while values_to_redistribute.len() > 0 && tries < self.peers.len().await {
+            let tasks: Vec<JoinHandle<Result<(Key, String, SocketAddr), StoreError>>> =
+                values_to_redistribute
+                    .iter()
+                    .map(|value| {
+                        let value = value.clone();
+                        let self_clone = Arc::clone(self);
+                        let corpse_addr = corpse.addr.clone();
+                        tries += 1;
+                        tokio::spawn(async move {
+                             // self_clone.store_rcvd(value, Some(corpse_addr)).await // TYPECHECK LOOP ;_;
+                            match self_clone.peers.freshest().await {
+                                Some(freshest_peer) => {
+                                    let (key, addr) = self_clone
+                                        .delegate_store(freshest_peer, value.clone(), Some(corpse_addr))
+                                        .await?;
+                                    Ok((key, value, addr))
+                                },
+                                None => {
+                                    warn!(
+                                        "All alone. I can store {} myself, I guess, it's ok. I'm fine.",
+                                        value
+                                    );
+                                    let key = &Key::hash(&value);
+                                    self_clone.store_in_primary(key, value.clone()).await;
+                                    return Ok((key.clone(), value, self_clone.addr));
+                                }
+                            }})
+                        })
+                        .collect();
+
+            for task in tasks {
+                match task.await.expect("join error?!") {
+                    Ok((key, value, peer)) => {
+                        let mut secondary_store = self.secondary_store.write().await;
+                        let store = secondary_store.get_mut(&corpse.addr);
+                        match store {
+                            Some(store) => {
+                                let val = store.remove(&key);
+                                if val.is_none() {
+                                    warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, key)
+                                }
+                            }
+                            None => {
+                                warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, peer);
                             }
                         }
-                        None => {
-                            warn!("Tried to remove ({}, {}) from secondary store but {} wasn't there.", key, peer, peer);
-                        }
+
+                        values_to_redistribute.remove(&value);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Restoring value from secondary failed (but retrying): {:?}",
+                            err
+                        );
                     }
                 }
-                Err(err) => {
-                    error!("Restoring values from secondary failed: {:?}", err);
-                }
             }
+        }
+        if values_to_redistribute.len() != 0 {
+            error!(
+                "Restoring values {:?} from secondary failed completely:",
+                values_to_redistribute
+            )
         }
     }
 
@@ -722,6 +748,11 @@ impl Peers {
         info!("Introduced {}", &new_peer.addr);
 
         (old_peers, new_peer)
+    }
+
+    pub async fn len(&self) -> usize {
+        let mut peers = self.known_peers.write().await;
+        peers.len()
     }
 }
 

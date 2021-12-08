@@ -1,5 +1,6 @@
 use crate::peering::client::Client;
 use crate::peering::this_node::{OtherNode, ThisNode};
+use itertools::Itertools;
 use std::sync::Arc;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -48,11 +49,11 @@ async fn pick_next(node: &Arc<ThisNode>, role: PeerRoles) -> Option<OtherNode> {
     let known_peers = node.peers.known_peers.read().await;
     match role {
         PeerRoles::PrimaryHolder => {
-            let secondants = node.secondants.read().await;
+            let secondant_map = node.secondant_map.read().await;
             //
             let mut ps = vec![];
 
-            for peer in secondants.values() {
+            for peer in secondant_map.values().flatten().unique() {
                 if let Some(p) = known_peers.get(&peer.addr) {
                     ps.push(p.clone());
                 }

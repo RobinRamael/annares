@@ -1,3 +1,4 @@
+use itertools::join;
 use std::collections::HashMap;
 use std::net::{AddrParseError, SocketAddr};
 use structopt::StructOpt;
@@ -90,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cli::GetStatus(cfg) => match Client::get_status(&cfg.base.peer).await {
-            Ok((primary_store, secondary_store, secondants, peers)) => {
+            Ok((primary_store, secondary_store, secondant_map, peers)) => {
                 println!("State of {}:\n", cfg.base.peer);
                 print!(" => {} Peers:", peers.len());
 
@@ -125,12 +126,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect();
 
-                for Secondant { key, addr } in secondants {
+                for SecondantStoreEntry { key, addrs } in secondant_map {
                     println!(
                         "  - {} ({}) : {}",
                         shorten(&key),
                         data_map.get(&key).unwrap_or(&"ERROR".to_string()),
-                        addr
+                        addrs.join(", ")
                     );
                 }
             }

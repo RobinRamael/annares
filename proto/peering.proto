@@ -116,10 +116,15 @@ message SecondaryStoreEntry {
   repeated KeyValuePair entries = 2;
 }
 
+message SecondantStoreEntry {
+  string key = 1;
+  repeated string addrs = 2;
+}
+
 message GetStatusReply {
   repeated KeyValuePair primary_store = 1;
   repeated SecondaryStoreEntry secondary_store = 2;
-  repeated Secondant secondants = 3;
+  repeated SecondantStoreEntry secondants = 3;
   repeated KnownPeer peers = 4;
 }
 

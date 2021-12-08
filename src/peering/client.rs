@@ -204,7 +204,7 @@ impl Client {
         (
             Vec<KeyValuePair>,
             Vec<SecondaryStoreEntry>,
-            Vec<Secondant>,
+            Vec<SecondantStoreEntry>,
             Vec<KnownPeer>,
         ),
         ClientError,
