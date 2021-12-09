@@ -46,10 +46,10 @@ pub async fn run_loop(node: &Arc<ThisNode>, interval: Duration) -> tokio::task::
 }
 
 async fn pick_next(node: &Arc<ThisNode>, role: PeerRoles) -> Option<OtherNode> {
-    let known_peers = node.peers.known_peers.read().await;
+    let known_peers = node.peers.acquire_read().await;
     match role {
         PeerRoles::PrimaryHolder => {
-            let secondant_map = node.secondant_map.read().await;
+            let secondant_map = node.acquire_secondant_map_read().await;
             //
             let mut ps = vec![];
 
@@ -63,7 +63,7 @@ async fn pick_next(node: &Arc<ThisNode>, role: PeerRoles) -> Option<OtherNode> {
                 .cloned()
         }
         PeerRoles::Secondant => {
-            let secondary_data = node.secondary_store.read().await;
+            let secondary_data = node.acquire_secondary_store_read().await;
             //
             let mut ps = vec![];
 
@@ -76,13 +76,9 @@ async fn pick_next(node: &Arc<ThisNode>, role: PeerRoles) -> Option<OtherNode> {
                 .max_by_key(|p| Instant::now() - p.last_seen)
                 .cloned()
         }
-        PeerRoles::Peer => {
-            let known_peers = node.peers.known_peers.read().await;
-
-            known_peers
-                .values()
-                .max_by_key(|p| Instant::now() - p.last_seen)
-                .cloned()
-        }
+        PeerRoles::Peer => known_peers
+            .values()
+            .max_by_key(|p| Instant::now() - p.last_seen)
+            .cloned(),
     }
 }

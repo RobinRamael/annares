@@ -3,6 +3,7 @@ use crate::peering::grpc::node_service_client::NodeServiceClient;
 use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
+use mockall::*;
 use std::net::SocketAddr;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
@@ -25,8 +26,9 @@ async fn _connect(
     }
 }
 
+#[automock]
 impl Client {
-    pub async fn connect(addr: &SocketAddr) -> Result<Self, ClientError> {
+    async fn connect(addr: &SocketAddr) -> Result<Self, ClientError> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .map(jitter) // add jitter to delays
             .take(3); // limit to 3 retries

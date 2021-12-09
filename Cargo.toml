@@ -27,6 +27,8 @@ tracing-appender = "0.2.0"
 rand = "0.6.1"
 tokio-retry = "0.3"
 itertools = "0.10.3"
+mockall = "0.10.2"
+mockall_double = "0.2.0"
 
 [dependencies.tracing-subscriber]
 features = ["std", "env-filter"]
@@ -37,3 +39,4 @@ tonic-build = "0.6"
 
 [dev-dependencies]
 quickcheck = "1.0.3"
+lazy_static = "1.4.0"

@@ -1,13 +1,16 @@
+use mockall_double::double;
 use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, Instant};
+use tokio::time::{timeout, Duration, Instant};
 
+#[double]
 use crate::peering::client::Client;
+
 use crate::peering::errors::*;
 
 use tracing::*;
@@ -69,6 +72,50 @@ impl ThisNode {
         self.hash.cyclic_distance(&key)
     }
 
+    pub async fn acquire_primary_store_read(&self) -> RwLockReadGuard<'_, HashMap<Key, String>> {
+        timeout(Duration::from_secs(3), self.primary_store.read())
+            .await
+            .expect("failed to acquire lock")
+    }
+
+    pub async fn acquire_primary_store_write(&self) -> RwLockWriteGuard<'_, HashMap<Key, String>> {
+        timeout(Duration::from_secs(3), self.primary_store.write())
+            .await
+            .expect("failed to acquire lock")
+    }
+
+    pub async fn acquire_secondary_store_read(
+        &self,
+    ) -> RwLockReadGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
+        timeout(Duration::from_secs(3), self.secondary_store.read())
+            .await
+            .expect("failed to acquire lock")
+    }
+
+    pub async fn acquire_secondary_store_write(
+        &self,
+    ) -> RwLockWriteGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
+        timeout(Duration::from_secs(3), self.secondary_store.write())
+            .await
+            .expect("failed to acquire lock")
+    }
+
+    pub async fn acquire_secondant_map_read(
+        &self,
+    ) -> RwLockReadGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
+        timeout(Duration::from_secs(3), self.secondant_map.read())
+            .await
+            .expect("failed to acquire lock")
+    }
+
+    pub async fn acquire_secondant_map_write(
+        &self,
+    ) -> RwLockWriteGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
+        timeout(Duration::from_secs(3), self.secondant_map.write())
+            .await
+            .expect("failed to acquire lock")
+    }
+
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mingle(&self, bootstrap_addr: &SocketAddr) {
         self.peers.introduce(bootstrap_addr).await;
@@ -125,7 +172,7 @@ impl ThisNode {
     }
 
     async fn clean_secondary_store(self: &Arc<Self>, keys: &HashSet<Key>) {
-        let mut secondary_store = self.secondary_store.write().await;
+        let mut secondary_store = self.acquire_secondary_store_write().await;
 
         let to_remove = secondary_store
             .clone()
@@ -148,7 +195,7 @@ impl ThisNode {
     }
 
     async fn clean_secondant_map(self: &Arc<Self>, keys: &HashSet<Key>) {
-        let mut secondant_map = self.secondant_map.write().await;
+        let mut secondant_map = self.acquire_secondant_map_write().await;
         let to_remove = secondant_map
             .clone()
             .into_iter()
@@ -163,7 +210,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) -> Vec<Key> {
-        let primary_store = self.primary_store.read().await;
+        let primary_store = self.acquire_primary_store_read().await;
         let values_to_move = primary_store
             .iter()
             .filter(|(key, _value)| peer.distance_to(key) < self.distance_to(key))
@@ -183,7 +230,7 @@ impl ThisNode {
 
         match Client::move_values(&peer.addr, values_to_move).await {
             Ok(keys) => {
-                let mut primary_store = self.primary_store.write().await;
+                let mut primary_store = self.acquire_primary_store_write().await;
 
                 for key in &keys {
                     let removed_value = primary_store.remove(&key);
@@ -294,7 +341,7 @@ impl ThisNode {
     }
 
     async fn store_in_primary(self: &Arc<Self>, key: &Key, value: String) -> Option<String> {
-        let mut primary_store = self.primary_store.write().await;
+        let mut primary_store = self.acquire_primary_store_write().await;
         primary_store.insert(key.clone(), value)
     }
 
@@ -329,8 +376,8 @@ impl ThisNode {
             return vec![];
         }
 
-        let secondant_map = self.secondant_map.read().await;
-        let peers = self.peers.known_peers.read().await;
+        let secondant_map = self.acquire_secondant_map_read().await;
+        let peers = self.peers.acquire_read().await;
 
         let mut secondant_counts: HashMap<OtherNode, u64> = HashMap::new();
 
@@ -401,8 +448,8 @@ impl ThisNode {
                     let primary_holder = self.addr.clone();
                     let peer_clone = peer.clone();
                     let corpse_clone = corpse.cloned();
+                    info!("Chose {:?} as secondant for {}", &peer, &value);
                     tokio::spawn(async move {
-                        info!("Chose {:?} as secondant for {}", &peer, &value);
                         match Client::store_secondary(
                             &peer_clone.addr,
                             value,
@@ -434,7 +481,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn store_as_secondant(&self, peer: OtherNode, key: Key) {
-        let mut secondant_map = self.secondant_map.write().await;
+        let mut secondant_map = self.acquire_secondant_map_write().await;
         let secondants = secondant_map.entry(key).or_insert(HashSet::new());
         secondants.insert(peer);
     }
@@ -448,7 +495,7 @@ impl ThisNode {
     ) -> Result<Key, StoreError> {
         self.handle_possible_corpse(corpse_addr).await;
 
-        let mut secondary_store = self.secondary_store.write().await;
+        let mut secondary_store = self.acquire_secondary_store_write().await;
 
         let key = Key::hash(&value);
 
@@ -462,7 +509,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn get_rcvd(self: &Arc<Self>, key: Key) -> Result<(String, SocketAddr), GetError> {
-        let primary_store = self.primary_store.read().await;
+        let primary_store = self.acquire_primary_store_read().await;
 
         if let Some(value) = primary_store.get(&key) {
             debug!("I have it!");
@@ -503,7 +550,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mark_alive(&self, peer: &OtherNode) {
-        let mut known_peers = self.peers.known_peers.write().await;
+        let mut known_peers = self.peers.acquire_write().await;
 
         let mut peer = known_peers
             .get_mut(&peer.addr)
@@ -515,9 +562,7 @@ impl ThisNode {
     #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn mark_dead(self: &Arc<Self>, dead_peer: &OtherNode) {
         warn!(this=?self.addr, dead_peer=?dead_peer, "Marking a death");
-        info!("Waiting to acquire peer lock");
-        let mut known_peers = self.peers.known_peers.write().await;
-        info!("Peer lock acquired");
+        let mut known_peers = self.peers.acquire_write().await;
 
         if let Some(_) = known_peers.remove_entry(&dead_peer.addr) {
             drop(known_peers);
@@ -546,7 +591,7 @@ impl ThisNode {
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn redistribute_primary_data_for(self: &Arc<Self>, corpse: &OtherNode) {
         info!("Do i have any primary data to redistribute?");
-        let secondant_map = self.secondant_map.read().await;
+        let secondant_map = self.acquire_secondant_map_read().await;
 
         let keys_to_find_new_secondants_for: Vec<_> = secondant_map
             .iter()
@@ -556,7 +601,7 @@ impl ThisNode {
 
         drop(&secondant_map); // we need to drop this immediately so the spawned tasks can write to them later.
 
-        let primary_store = self.primary_store.read().await;
+        let primary_store = self.acquire_primary_store_read().await;
         info!(keys_to_find_new_secondants_for=?keys_to_find_new_secondants_for);
 
         for key in keys_to_find_new_secondants_for {
@@ -579,7 +624,7 @@ impl ThisNode {
 
     #[instrument(skip(self), fields(this=?self.addr))]
     async fn redistribute_secondary_data_for(self: &Arc<Self>, corpse: &OtherNode) {
-        let secondary_store = self.secondary_store.read().await;
+        let secondary_store = self.acquire_secondary_store_read().await;
 
         info!("redistributing secondary data for {:?}", corpse);
 
@@ -627,7 +672,7 @@ impl ThisNode {
             for task in tasks {
                 match task.await.expect("join error?!") {
                     Ok((key, value, peer)) => {
-                        let mut secondary_store = self.secondary_store.write().await;
+                        let mut secondary_store = self.acquire_secondary_store_write().await;
                         let store = secondary_store.get_mut(&corpse.addr);
                         match store {
                             Some(store) => {
@@ -664,7 +709,7 @@ impl ThisNode {
     async fn handle_possible_corpse(self: &Arc<Self>, corpse_addr: Option<SocketAddr>) {
         if let Some(corpse_addr) = corpse_addr {
             warn!(corpse=?corpse_addr, "Marking corpse as dead thanks to context from other node");
-            let peers = self.peers.known_peers.read().await;
+            let peers = self.peers.acquire_read().await;
             if let Some(corpse) = peers.get(&corpse_addr).cloned() {
                 drop(peers);
                 self.mark_dead(&corpse).await;
@@ -681,8 +726,22 @@ pub struct Peers {
 }
 
 impl Peers {
+    pub async fn acquire_read(&self) -> RwLockReadGuard<'_, HashMap<SocketAddr, OtherNode>> {
+        let known_peers = timeout(Duration::from_secs(3), self.known_peers.read())
+            .await
+            .expect("failed to acquire lock");
+        known_peers
+    }
+
+    pub async fn acquire_write(&self) -> RwLockWriteGuard<'_, HashMap<SocketAddr, OtherNode>> {
+        let known_peers = timeout(Duration::from_secs(3), self.known_peers.write())
+            .await
+            .expect("failed to acquire lock");
+        known_peers
+    }
+
     pub async fn stalest(&self) -> Option<OtherNode> {
-        let known_peers = self.known_peers.read().await;
+        let known_peers = self.acquire_read().await;
 
         known_peers
             .values()
@@ -691,7 +750,7 @@ impl Peers {
     }
 
     pub async fn freshest(&self) -> Option<OtherNode> {
-        let known_peers = self.known_peers.read().await;
+        let known_peers = self.acquire_read().await;
 
         known_peers
             .values()
@@ -701,9 +760,7 @@ impl Peers {
 
     #[instrument(skip(self))]
     pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
-        debug!("attempting to acquire known_peers lock");
-        let known_peers = self.known_peers.read().await;
-        debug!("known_peers lock acquired!");
+        let known_peers = self.acquire_read().await;
 
         known_peers
             .values()
@@ -728,21 +785,21 @@ impl Peers {
 
     #[instrument(skip(self))]
     pub async fn pick(&self, n: usize) -> Vec<OtherNode> {
-        let peers = self.known_peers.read().await;
+        let known_peers = self.acquire_read().await;
 
         let mut rng = rand::rngs::ThreadRng::default();
-        peers
+        known_peers
             .values()
             .cloned()
             // FIXME: this min here means that when the network is smaller than REDUNDANCY,
             // the number of stewards for this value will stay at the same size
-            .choose_multiple(&mut rng, std::cmp::min(n, peers.len()))
+            .choose_multiple(&mut rng, std::cmp::min(n, known_peers.len()))
     }
 
     // returns the nodes before the new one was added!
     #[instrument(skip(self))]
     pub async fn introduce(&self, addr: &SocketAddr) -> (Vec<OtherNode>, OtherNode) {
-        let mut peers = self.known_peers.write().await;
+        let mut peers = self.acquire_write().await;
 
         let old_peers = peers.values().cloned().collect();
 
@@ -755,9 +812,9 @@ impl Peers {
 
     #[instrument(skip(self))]
     pub async fn len(&self) -> usize {
-        let peers = self.known_peers.read().await;
+        let known_peers = self.acquire_read().await;
 
-        peers.len()
+        known_peers.len()
     }
 }
 
@@ -778,5 +835,94 @@ impl std::fmt::Debug for OtherNode {
         f.debug_struct("OtherNode")
             .field("addr", &self.addr)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::test;
+
+    use super::{Client, Key, ThisNode};
+    use crate::peering::utils::ipv6_loopback_socketaddr as a;
+    use lazy_static::lazy_static;
+    use std::sync::{Arc, Mutex};
+
+    fn hashed(s: &str) -> Key {
+        Key::hash(&s.to_string())
+    }
+
+    fn s(s: &str) -> String {
+        s.to_string()
+    }
+
+    lazy_static! {
+        static ref CLIENT_MTX: Mutex<()> = Mutex::new(());
+    }
+
+    #[test]
+    async fn test_get_here() {
+        let _m = CLIENT_MTX.lock().unwrap();
+
+        let ctx = Client::get_context();
+        ctx.expect().never();
+
+        let k = hashed("test");
+        let node = Arc::new(ThisNode::new(a(1234), 1));
+
+        node.peers.introduce(&a(4567)).await;
+        node.store_in_primary(&k, s("test")).await;
+
+        let (value, addr) = node.get_rcvd(k).await.unwrap();
+
+        assert_eq!(value, "test");
+        assert_eq!(addr, a(1234));
+        ctx.checkpoint();
+    }
+
+    #[test]
+    async fn test_get_delegated() {
+        let _m = CLIENT_MTX.lock().unwrap();
+
+        let ctx = Client::get_context();
+        ctx.expect()
+            .returning(|_, _| Ok(("avalue".to_string(), a(1234))));
+
+        let node = Arc::new(ThisNode::new(a(1234), 1));
+
+        node.peers.introduce(&a(4567)).await;
+        let (value, addr) = node.get_rcvd(hashed("test")).await.unwrap();
+
+        assert_eq!(value, "avalue");
+        assert_eq!(addr, a(1234));
+        ctx.checkpoint();
+    }
+
+    #[test]
+    async fn test_mingle() {
+        let _m = CLIENT_MTX.lock().unwrap();
+
+        let ctx = Client::introduce_context();
+        ctx.expect().times(3).returning(|addr, sender_addr| {
+            assert_eq!(sender_addr, &a(1111));
+            match addr.port() {
+                2222 => Ok(vec![a(3333), a(4444)]),
+                3333 => Ok(vec![a(2222), a(4444)]),
+                4444 => Ok(vec![a(2222), a(3333)]),
+                _ => {
+                    panic!("unexpected call")
+                }
+            }
+        });
+
+        let node = Arc::new(ThisNode::new(a(1111), 1));
+
+        node.mingle(&a(2222)).await;
+
+        let peers = node.peers.known_peers.read().await;
+        assert_eq!(peers.len(), 3);
+        assert!(peers.get(&a(2222)).is_some());
+        assert!(peers.get(&a(3333)).is_some());
+        assert!(peers.get(&a(4444)).is_some());
+        ctx.checkpoint();
     }
 }
