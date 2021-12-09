@@ -174,6 +174,8 @@ impl ThisNode {
     async fn clean_secondary_store(self: &Arc<Self>, keys: &HashSet<Key>) {
         let mut secondary_store = self.acquire_secondary_store_write().await;
 
+        info!(keys=?keys, "Cleaning keys from secondary store");
+
         let to_remove = secondary_store
             .clone()
             .into_iter()
@@ -194,7 +196,10 @@ impl ThisNode {
         }
     }
 
+    #[instrument(skip(self), fields(this=?self.addr))]
     async fn clean_secondant_map(self: &Arc<Self>, keys: &HashSet<Key>) {
+        info!(keys=?keys, "Cleaning keys from secondant map");
+
         let mut secondant_map = self.acquire_secondant_map_write().await;
         let to_remove = secondant_map
             .clone()
@@ -518,7 +523,11 @@ impl ThisNode {
 
         drop(primary_store);
 
-        match self.peers.nearest_to(&key).await {
+        match self
+            .peers
+            .nearest_to_but_less_than(&key, &self.distance_to(&key))
+            .await
+        {
             Some(peer) => self.delegate_get(peer, key).await,
             None => Err(GetError::NotFound(NotFoundError {
                 key,
@@ -845,6 +854,7 @@ mod tests {
     use super::{Client, Key, ThisNode};
     use crate::peering::utils::ipv6_loopback_socketaddr as a;
     use lazy_static::lazy_static;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
     fn hashed(s: &str) -> Key {
@@ -890,7 +900,7 @@ mod tests {
         let node = Arc::new(ThisNode::new(a(1234), 1));
 
         node.peers.introduce(&a(4567)).await;
-        let (value, addr) = node.get_rcvd(hashed("test")).await.unwrap();
+        let (value, addr) = node.get_rcvd(hashed("fftest")).await.unwrap();
 
         assert_eq!(value, "avalue");
         assert_eq!(addr, a(1234));
@@ -924,5 +934,33 @@ mod tests {
         assert!(peers.get(&a(3333)).is_some());
         assert!(peers.get(&a(4444)).is_some());
         ctx.checkpoint();
+    }
+
+    #[test]
+    async fn test_clean_secondary_store() {
+        let node = Arc::new(ThisNode::new(a(1111), 1));
+
+        let mut secondary_store = node.acquire_secondary_store_write().await;
+
+        // let map = |vs|
+
+        fn map(vs: Vec<&str>) -> HashMap<Key, String> {
+            HashMap::from_iter(vs.iter().map(|v| (hashed(v), s(v))))
+        }
+
+        secondary_store.insert(a(2222), map(vec!["foo", "bar"]));
+        secondary_store.insert(a(3333), map(vec!["bar", "baz"]));
+        secondary_store.insert(a(4444), map(vec!["baz", "frob"]));
+
+        drop(secondary_store);
+
+        node.clean_secondary_store(&HashSet::from_iter(
+            vec!["foo", "frob"].into_iter().map(hashed),
+        ))
+        .await;
+
+        let secondary_store = node.acquire_secondary_store_write().await;
+
+        dbg!(secondary_store);
     }
 }

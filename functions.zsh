@@ -12,7 +12,7 @@ function build() {
 function killnodes() {
 	echo killing all nodes
 	pgrep annares | xargs -L1 kill
-	rm -f .currently_running
+	rm -f .currently_running .added_keys
 }
 
 
@@ -105,7 +105,7 @@ function monitor_logs() {
 }
 
 function clean_logs() {
-	pgrep -f annares.log | xargs kill
+	pgrep -f annares.log | xargs -L1 kill
 	rm -rf /tmp/logs/annares.log*
 	echo "" > /tmp/logs/annares.log
 }
@@ -116,6 +116,8 @@ function debugleave {
 	seed=$3
 	n_words=$4
 	kill_n=$5
+
+	build
 
 	runs $n $redundancy
 
@@ -131,7 +133,7 @@ function debugleave {
 	echo "press enter to kill $kill_n random nodes"
 	read
 	for i in {1..$kill_n}; do
-		killrandomly
+		shutdownrandomly
 	done
 
 	echo "press enter to check"
@@ -140,6 +142,7 @@ function debugleave {
 
 	echo "press enter to close log windows"
 	read
+	close_logs
 }
 
 
@@ -149,6 +152,8 @@ function debugjoin {
 	seed=$3
 	n_words=$4
 	new_n=$5
+
+	build
 
 	clean_logs
 
@@ -175,7 +180,7 @@ function debugjoin {
 
 	echo "press enter to close log windows"
 	read
-	pgrep -f annares.log | xargs kill
+	close_logs
 
 }
 
@@ -183,7 +188,7 @@ function debugjoin {
 function shutdownrandomly {
 	peer=$(shuf -n 1 .currently_running)
 	echo killing $peer
-	killnode $peer
+	shutdown $peer
 }
 
 function monitor {
@@ -192,4 +197,9 @@ function monitor {
 		echo launching monitor for $port
 		kitty watch client status -p "[::1]:$port" &
 	done
+}
+
+function close_logs() {
+
+	pgrep -f annares.log | xargs -L1 kill
 }
