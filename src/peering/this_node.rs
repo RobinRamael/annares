@@ -159,23 +159,27 @@ impl ThisNode {
         let new_peer_clone = new_peer.clone();
 
         tokio::spawn(async move {
-            // tokio::time::sleep(Duration::from_millis(500)).await; // FIXME: do retries instead of this
-            let moved_keys = self_clone.move_values_to_peer(&new_peer_clone).await;
-
-            let moved_keys: HashSet<Key> = HashSet::from_iter(moved_keys.into_iter());
-
-            self_clone.clean_secondary_store(&moved_keys).await;
-            self_clone.clean_secondant_map(&moved_keys).await;
+            self_clone.clean_for(&new_peer_clone).await;
         });
 
         Ok(old_peers)
     }
 
-    async fn clean_secondary_store(self: &Arc<Self>, keys: &HashSet<Key>) {
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn clean_for(self: &Arc<Self>, peer: &OtherNode) {
+        let moved_keys = self.move_values_to(&peer).await;
+
+        let moved_keys: HashSet<Key> = HashSet::from_iter(moved_keys.into_iter());
+        self.clean_secondant_map(&moved_keys).await;
+
+        self.clean_secondary_store_after_move_to(&peer).await;
+    }
+
+    #[instrument(skip(self), fields(this=?self.addr))]
+    async fn clean_secondary_store_after_move_to(self: &Arc<Self>, peer: &OtherNode) {
         let mut secondary_store = self.acquire_secondary_store_write().await;
 
-        info!(keys=?keys, "Cleaning keys from secondary store");
-
+        // if the new peer is closer than the one we are secondant for:
         let to_remove = secondary_store
             .clone()
             .into_iter()
@@ -185,8 +189,12 @@ impl ThisNode {
                     .map(move |(k, _)| (addr.clone(), k.clone()))
             })
             .flatten()
-            .filter(|(_, key)| keys.contains(key))
+            .filter(|(addr, key)| {
+                peer.distance_to(key) < Key::hash(&addr.to_string()).cyclic_distance(key)
+            })
             .collect::<Vec<_>>();
+
+        info!(removing=?to_remove, "Cleaning peer references out of secondary store");
 
         for (addr, key) in to_remove {
             info!("cleaning out of secondary store: {:?}", (addr, key));
@@ -214,7 +222,7 @@ impl ThisNode {
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
-    async fn move_values_to_peer(self: &Arc<Self>, peer: &OtherNode) -> Vec<Key> {
+    async fn move_values_to(self: &Arc<Self>, peer: &OtherNode) -> Vec<Key> {
         let primary_store = self.acquire_primary_store_read().await;
         let values_to_move = primary_store
             .iter()
@@ -241,7 +249,7 @@ impl ThisNode {
                     let removed_value = primary_store.remove(&key);
                     match removed_value {
                         Some(removed_value) => {
-                            info!("{} no longer held here", removed_value);
+                            info!("{} removed from primary store", removed_value);
                         }
                         None => {
                             warn!("Tried to remove a value that wasn't here (anymore?)")
@@ -854,11 +862,16 @@ mod tests {
     use super::{Client, Key, ThisNode};
     use crate::peering::utils::ipv6_loopback_socketaddr as a;
     use lazy_static::lazy_static;
-    use std::collections::{HashMap, HashSet};
+    use maplit::hashmap;
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    fn hashed(s: &str) -> Key {
-        Key::hash(&s.to_string())
+    fn h(s: &str) -> Key {
+        h_s(s.to_string())
+    }
+
+    fn h_s(s: String) -> Key {
+        Key::hash(&s)
     }
 
     fn s(s: &str) -> String {
@@ -876,7 +889,7 @@ mod tests {
         let ctx = Client::get_context();
         ctx.expect().never();
 
-        let k = hashed("test");
+        let k = h("test");
         let node = Arc::new(ThisNode::new(a(1234), 1));
 
         node.peers.introduce(&a(4567)).await;
@@ -899,8 +912,13 @@ mod tests {
 
         let node = Arc::new(ThisNode::new(a(1234), 1));
 
-        node.peers.introduce(&a(4567)).await;
-        let (value, addr) = node.get_rcvd(hashed("fftest")).await.unwrap();
+        let (_, peer4567) = node.peers.introduce(&a(4567)).await;
+
+        let k = h("bear");
+
+        assert!(node.distance_to(&k) > peer4567.distance_to(&k));
+
+        let (value, addr) = node.get_rcvd(k).await.unwrap();
 
         assert_eq!(value, "avalue");
         assert_eq!(addr, a(1234));
@@ -938,29 +956,60 @@ mod tests {
 
     #[test]
     async fn test_clean_secondary_store() {
-        let node = Arc::new(ThisNode::new(a(1111), 1));
+        let _m = CLIENT_MTX.lock().unwrap();
+        let node = Arc::new(ThisNode::new(a(1111), 2));
 
-        let mut secondary_store = node.acquire_secondary_store_write().await;
-
-        // let map = |vs|
+        let ctx = Client::store_context();
+        ctx.expect().returning(|addr, value, corpse| {
+            println!("Client::store({}, {}, {:?})", addr, value, corpse);
+            Ok((h_s(value), addr.clone()))
+        });
 
         fn map(vs: Vec<&str>) -> HashMap<Key, String> {
-            HashMap::from_iter(vs.iter().map(|v| (hashed(v), s(v))))
+            HashMap::from_iter(vs.iter().map(|v| (h(v), s(v))))
         }
 
-        secondary_store.insert(a(2222), map(vec!["foo", "bar"]));
-        secondary_store.insert(a(3333), map(vec!["bar", "baz"]));
-        secondary_store.insert(a(4444), map(vec!["baz", "frob"]));
+        let (_, peer2) = node.peers.introduce(&a(2222)).await;
+        let (_, peer3) = node.peers.introduce(&a(3333)).await;
+        let (_, peer4) = node.peers.introduce(&a(4444)).await;
+        let (_, peer5) = node.peers.introduce(&a(5555)).await;
 
-        drop(secondary_store);
+        node.store_rcvd(s("foo"), None).await.unwrap(); // for 2222
+        node.store_rcvd(s("bar"), None).await.unwrap(); // for 2222 but will be moved
+        node.store_rcvd(s("bear"), None).await.unwrap(); // for 3333 but will be moved
+        node.store_rcvd(s("doggo"), None).await.unwrap(); // for 4444
+        node.store_rcvd(s("foxxie"), None).await.unwrap(); // for 5555
 
-        node.clean_secondary_store(&HashSet::from_iter(
-            vec!["foo", "frob"].into_iter().map(hashed),
-        ))
-        .await;
+        {
+            let mut secondary_store = node.acquire_secondary_store_write().await;
+            secondary_store.insert(a(2222), map(vec!["foo", "bar"]));
+            secondary_store.insert(a(3333), map(vec!["bear"]));
+            secondary_store.insert(a(4444), map(vec!["doggo"]));
+            secondary_store.insert(a(5555), map(vec!["foxxie", "bar"]));
+            // (^ bar should not really be here but it should still be removed)
+            println!("{:#?}", secondary_store);
+        }
+        //
+        let (_, peer6) = node.peers.introduce(&a(9393)).await;
 
-        let secondary_store = node.acquire_secondary_store_write().await;
+        println!("peer2: {:?}", peer2.key);
+        println!("peer3: {:?}", peer3.key);
+        println!("peer4: {:?}", peer4.key);
+        println!("peer5: {:?}", peer5.key);
+        println!("peer6: {:?}", peer6.key);
 
-        dbg!(secondary_store);
+        node.clean_secondary_store_after_move_to(&peer6).await;
+        let secondary_store = node.acquire_secondary_store_read().await;
+        println!("{:#?}", secondary_store);
+
+        assert_eq!(
+            secondary_store.clone(),
+            hashmap! {
+                a(2222) => hashmap!{h("foo") => s("foo")},
+                a(3333) => hashmap!{h("bear") => s("bear")},
+                a(4444) => hashmap!{},
+                a(5555) => hashmap!{h("foxxie") => s("foxxie")},
+            }
+        );
     }
 }
