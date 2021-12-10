@@ -12,7 +12,7 @@ function build() {
 function killnodes() {
 	echo killing all nodes
 	pgrep annares | xargs -L1 kill
-	rm -f .currently_running .added_keys
+	rm -f .currently_running .added_keys .added_values
 }
 
 
@@ -65,8 +65,7 @@ function enter_random_words {
 	echo adding $1 words
 	for value in $(shuf -n $1 words); do
 		node=$(shuf -n 1 .currently_running)
-		echo "$value from $node"
-		client store $value -p ":$node" | grep under | cut -f2 -d' ' >>.added_keys
+		send_store $node $value
 	done
 }
 
@@ -79,9 +78,16 @@ function enter_words {
 	((end = $1 + $2 - 1 ))
 	for value in $(cat words | sed -n "$start,$end p"); do
 		node=$(shuf -n 1 .currently_running)
-		echo store "$value using $node"
-		client store $value -p ":$node" | grep under | cut -f2 -d' ' >>.added_keys
+		send_store $node $value
 	done
+}
+
+function send_store() {
+	node=$1
+	value=$2
+	echo store "$value using $node"
+	echo $value >> .added_values
+	client store $value -p ":$node" | grep under | cut -f2 -d' ' >> .added_keys
 }
 
 function check {
@@ -122,12 +128,10 @@ function debugleave {
 	runs $n $redundancy
 
 	echo "press enter to monitor logs"
+	echo "and enter $4 values"
 	read
 	monitor_logs
-
-
-	echo "press enter to enter $4 values"
-	read
+	sleep 1
 	enter_words $seed $n_words
 
 	echo "press enter to kill $kill_n random nodes"
@@ -160,12 +164,10 @@ function debugjoin {
 	runs $initial_n $redundancy
 
 	echo "press enter to monitor logs"
+	echo "and enter $4 values"
 	read
 	monitor_logs
-
-
-	echo "press enter to enter $4 values"
-	read
+	sleep 1
 	enter_words $seed $n_words
 
 	echo "press enter to let $5 nodes join the network"

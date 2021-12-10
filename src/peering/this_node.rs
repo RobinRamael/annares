@@ -72,48 +72,77 @@ impl ThisNode {
         self.hash.cyclic_distance(&key)
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_primary_store_read(&self) -> RwLockReadGuard<'_, HashMap<Key, String>> {
-        timeout(Duration::from_secs(3), self.primary_store.read())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.primary_store.read()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire primary data read lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_primary_store_write(&self) -> RwLockWriteGuard<'_, HashMap<Key, String>> {
-        timeout(Duration::from_secs(3), self.primary_store.write())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.primary_store.write()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire primary data write lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_secondary_store_read(
         &self,
     ) -> RwLockReadGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
-        timeout(Duration::from_secs(3), self.secondary_store.read())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.secondary_store.read()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire secondary data read lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_secondary_store_write(
         &self,
     ) -> RwLockWriteGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
-        timeout(Duration::from_secs(3), self.secondary_store.write())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.secondary_store.write()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire secondary data write lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_secondant_map_read(
         &self,
     ) -> RwLockReadGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
-        timeout(Duration::from_secs(3), self.secondant_map.read())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.secondant_map.read()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire secondant map read lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
-
+    #[instrument(skip(self), fields(this=?self.addr))]
     pub async fn acquire_secondant_map_write(
         &self,
     ) -> RwLockWriteGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
-        timeout(Duration::from_secs(3), self.secondant_map.write())
-            .await
-            .expect("failed to acquire lock")
+        match timeout(Duration::from_secs(3), self.secondant_map.write()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire secondant map write lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
     #[instrument(skip(self), fields(this=?self.addr))]
@@ -309,6 +338,8 @@ impl ThisNode {
 
         let key = Key::hash(&value);
 
+        info!(key=%key);
+
         match self
             .peers
             .nearest_to_but_less_than(&key, &self.distance_to(&key))
@@ -366,6 +397,7 @@ impl ThisNode {
         corpse: Option<&OtherNode>,
     ) -> () {
         let inserted = self.store_in_primary(key, value.clone()).await;
+        info!("Stored here.");
 
         if inserted.is_none() {
             let self_clone = Arc::clone(self);
@@ -743,18 +775,26 @@ pub struct Peers {
 }
 
 impl Peers {
+    #[instrument(skip(self))]
     pub async fn acquire_read(&self) -> RwLockReadGuard<'_, HashMap<SocketAddr, OtherNode>> {
-        let known_peers = timeout(Duration::from_secs(3), self.known_peers.read())
-            .await
-            .expect("failed to acquire lock");
-        known_peers
+        match timeout(Duration::from_secs(3), self.known_peers.read()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire peers read lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn acquire_write(&self) -> RwLockWriteGuard<'_, HashMap<SocketAddr, OtherNode>> {
-        let known_peers = timeout(Duration::from_secs(3), self.known_peers.write())
-            .await
-            .expect("failed to acquire lock");
-        known_peers
+        match timeout(Duration::from_secs(3), self.known_peers.write()).await {
+            Ok(x) => x,
+            Err(_) => {
+                error!("Failed to acquire peers write lock.");
+                panic!("Deadlocked")
+            }
+        }
     }
 
     pub async fn stalest(&self) -> Option<OtherNode> {
