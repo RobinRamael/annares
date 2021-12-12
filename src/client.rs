@@ -5,8 +5,12 @@ use structopt::StructOpt;
 mod peering;
 use peering::client::Client;
 use peering::grpc::*;
-use peering::hash::Key;
-use peering::utils::shorten;
+
+mod keys;
+use keys::Key;
+
+mod utils;
+use utils::shorten;
 
 fn parse_peer_flag(addr_s: &str) -> Result<SocketAddr, AddrParseError> {
     addr_s

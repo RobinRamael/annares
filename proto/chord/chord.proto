@@ -1,0 +1,73 @@
+
+syntax = "proto3";
+package chord;
+
+service ChordService {
+  rpc findSuccessor (FindSuccessorRequest) returns (FindSuccessorReply);
+  rpc getPredecessor (GetPredecessorRequest) returns (GetPredecessorReply);
+  rpc notify (NotifyRequest) returns (NotifyReply);
+
+  rpc getKey (GetRequest) returns (GetReply);
+  rpc storeValue (StoreRequest) returns (StoreReply);
+
+  rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
+
+  rpc getStatus (GetStatusRequest) returns (GetStatusReply);
+  rpc shutDown (ShutDownRequest) returns (ShutDownReply);
+}
+
+message FindSuccessorRequest {
+  string key = 1;
+}
+
+message FindSuccessorReply {
+  string addr = 1;
+}
+
+message GetPredecessorRequest {}
+
+message GetPredecessorReply {
+  optional string addr = 1;
+}
+
+message NotifyRequest {
+  string addr = 1;
+}
+message NotifyReply {}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetReply {
+  string value = 1;
+}
+
+message StoreRequest {
+  string value = 1;
+}
+
+message StoreReply {
+  string key = 1;
+}
+
+
+message GetStatusRequest {
+}
+
+message KeyValuePair {
+  string key = 1;
+  string value = 2;
+}
+
+message GetStatusReply {
+  string successor = 1;
+  optional string predecessor = 2;
+  repeated KeyValuePair store = 3;
+}
+
+message HealthCheckRequest {}
+message HealthCheckReply {}
+
+message ShutDownRequest {}
+message ShutDownReply {}

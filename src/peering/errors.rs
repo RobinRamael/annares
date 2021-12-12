@@ -1,4 +1,6 @@
-use crate::peering::hash::Key;
+use crate::keys::Key;
+
+// use crate::hash::Key;
 use std::net::SocketAddr;
 use tonic::Status;
 

@@ -1,8 +1,9 @@
 use generic_array::{ArrayLength, GenericArray};
 use std::cmp;
+use std::cmp::Ordering;
 use std::ops;
 
-use crate::peering::utils::shorten;
+use crate::utils::shorten;
 
 use sha2::{Digest, Sha256};
 
@@ -27,6 +28,10 @@ impl Hash {
         let result = hasher.finalize();
 
         Hash::new(result)
+    }
+
+    pub fn from_addr(addr: std::net::SocketAddr) -> Self {
+        Hash::hash(&addr.to_string())
     }
 }
 
@@ -144,6 +149,14 @@ where
     pub fn as_hex_string(&self) -> String {
         format!("{:02x}", self)
     }
+
+    pub fn is_between(&self, lower_bound: &Self, higher_bound: &Self) -> bool {
+        match lower_bound.cmp(higher_bound) {
+            Ordering::Less => self <= higher_bound - lower_bound,
+            Ordering::Greater => self >= higher_bound - lower_bound,
+            Ordering::Equal => self == lower_bound,
+        }
+    }
 }
 
 impl<N> cmp::PartialOrd for Arru8<N>
@@ -171,6 +184,7 @@ where
         cmp::Ordering::Equal
     }
 }
+
 impl<N> ops::Sub for Arru8<N>
 where
     N: ArrayLength<u8> + Eq + Copy,
@@ -355,6 +369,16 @@ mod tests {
         let d = Arru8::new(arr![u8; 192, 27]);
 
         assert_eq!(n1.cyclic_distance(&n2), d);
+    }
+
+    #[test]
+    fn test_is_between() {
+        let n_1 = Arru8::new(arr![u8;  16, 112]);
+        let n_2 = Arru8::new(arr![u8;  208, 139]);
+
+        let n_m = Arru8::new(arr![u8; 192, 27]);
+
+        assert!(n_m.is_between(n_1, n_2))
     }
 
     extern crate quickcheck;

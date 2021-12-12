@@ -1,6 +1,6 @@
+use crate::keys::Key;
 use crate::peering::errors::*;
 use crate::peering::grpc::*;
-use crate::peering::hash::Key;
 use crate::peering::this_node::{OtherNode, ThisNode};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -8,8 +8,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::async_trait;
 
-use crate::peering::utils;
 use tokio::time::Duration;
+
+use crate::utils;
 
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};

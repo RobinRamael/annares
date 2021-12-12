@@ -1,8 +1,8 @@
+use crate::keys::Key;
 use crate::peering::errors::*;
 use crate::peering::grpc::node_service_client::NodeServiceClient;
 use crate::peering::grpc::*;
-use crate::peering::hash::Key;
-use crate::peering::utils;
+use crate::utils;
 use mockall::*;
 use opentelemetry::{global, propagation::Injector};
 use std::net::SocketAddr;

@@ -11,9 +11,16 @@ use opentelemetry::sdk::propagation::TraceContextPropagator;
 use peering::health_check::spawn_health_check;
 use peering::service::run_service;
 use peering::this_node::ThisNode;
-use peering::utils;
 use tokio::time::Duration;
 use tracing_subscriber::prelude::*;
+
+mod chord;
+
+mod keys;
+use self::keys::Key;
+
+mod utils;
+use utils::ipv6_loopback_socketaddr;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
@@ -49,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Initializing {}", args.port);
 
-    let addr = utils::ipv6_loopback_socketaddr(args.port);
+    let addr = ipv6_loopback_socketaddr(args.port);
 
     let this_node = Arc::new(ThisNode::new(addr, args.redundancy));
 

@@ -1,0 +1,130 @@
+syntax = "proto3";
+package peering;
+
+/* service PeeringNode { */
+/*   rpc Introduce (IntroductionRequest) returns (IntroductionReply); */
+
+/*   rpc getKey (GetKeyRequest) returns (GetKeyReply); */
+/*   rpc store (StoreRequest) returns (StoreReply); */
+/*   rpc transfer (TransferRequest) returns (TransferReply); */
+/*   rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply); */
+
+/*   rpc getStatus (GetStatusRequest) returns (GetStatusReply); */
+/*   rpc ListPeers (ListPeersRequest) returns (ListPeersReply); */
+
+/*   rpc shutDown (ShutDownRequest) returns (ShutDownReply); */
+/* } */
+
+service NodeService {
+  rpc introduce (IntroductionRequest) returns (IntroductionReply);
+  rpc get (GetRequest) returns (GetReply);
+  rpc store (StoreRequest) returns (StoreReply);
+  rpc storeSecondary (SecondaryStoreRequest) returns (SecondaryStoreReply);
+  rpc moveValues (MoveValuesRequest) returns (MoveValuesReply);
+  rpc checkHealth (HealthCheckRequest) returns (HealthCheckReply);
+
+  rpc getStatus (GetStatusRequest) returns (GetStatusReply);
+  /* rpc ListPeers (ListPeersRequest) returns (ListPeersReply); */
+  rpc shutDown (ShutDownRequest) returns (ShutDownReply);
+}
+
+message IntroductionRequest {
+  string senderAddr = 1;
+}
+
+message IntroductionReply {
+  repeated KnownPeer knownPeers = 1;
+}
+
+message MoveValuesRequest {
+  repeated string values = 1;
+}
+
+message MoveValuesReply {
+  repeated string keys = 1;
+}
+message ListPeersRequest {}
+
+message KnownPeer {
+  string addr = 1;
+}
+
+message ListPeersReply {
+  repeated KnownPeer knownPeers = 1;
+}
+
+message HealthCheckRequest { }
+
+message HealthCheckReply { }
+
+
+message StoreRequest {
+  string value = 1;
+  optional string corpse = 2;
+}
+
+message StoreReply {
+  string key = 1;
+  string storedIn = 2;
+}
+
+message SecondaryStoreRequest {
+  string value = 1;
+  string primary_holder = 2;
+  optional string corpse = 3;
+}
+
+message SecondaryStoreReply {
+  string key = 1;
+
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetReply {
+  string value = 1;
+  string primaryHolder = 2;
+}
+
+message KeyValuePair {
+  string key = 1;
+  string value = 2;
+}
+
+message TransferRequest {
+  repeated KeyValuePair toStore = 1;
+}
+
+message TransferReply {
+  repeated string transferredKeys = 1;
+}
+
+message GetStatusRequest { }
+
+message Secondant {
+    string addr = 1;
+    string key = 2;
+}
+
+message SecondaryStoreEntry {
+  string addr = 1;
+  repeated KeyValuePair entries = 2;
+}
+
+message SecondantStoreEntry {
+  string key = 1;
+  repeated string addrs = 2;
+}
+
+message GetStatusReply {
+  repeated KeyValuePair primary_store = 1;
+  repeated SecondaryStoreEntry secondary_store = 2;
+  repeated SecondantStoreEntry secondants = 3;
+  repeated KnownPeer peers = 4;
+}
+
+message ShutDownRequest {}
+message ShutDownReply {}
+

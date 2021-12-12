@@ -8,14 +8,14 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration, Instant};
 
+use crate::keys::Key;
+
 #[double]
 use crate::peering::client::Client;
 
 use crate::peering::errors::*;
 
 use tracing::*;
-
-type Key = crate::peering::hash::Hash;
 
 #[derive(Clone, Eq)]
 pub struct OtherNode {
@@ -918,7 +918,7 @@ mod tests {
     use tokio::test;
 
     use super::{Client, Key, ThisNode};
-    use crate::peering::utils::ipv6_loopback_socketaddr as a;
+    use crate::utils::ipv6_loopback_socketaddr as a;
     use lazy_static::lazy_static;
     use maplit::hashmap;
     use std::collections::HashMap;
