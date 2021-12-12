@@ -4,11 +4,14 @@ use crate::peering::grpc::*;
 use crate::peering::hash::Key;
 use crate::peering::utils;
 use mockall::*;
+use opentelemetry::{global, propagation::Injector};
 use std::net::SocketAddr;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use tonic::{Request, Status};
 use tracing::*;
+use tracing_futures::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub struct Client {
     grpc_client: NodeServiceClient<tonic::transport::Channel>,
@@ -17,7 +20,10 @@ pub struct Client {
 async fn _connect(
     addr: &SocketAddr,
 ) -> Result<NodeServiceClient<tonic::transport::Channel>, tonic::transport::Error> {
-    match NodeServiceClient::connect(utils::build_grpc_url(&addr)).await {
+    match NodeServiceClient::connect(utils::build_grpc_url(&addr))
+        .instrument(info_span!("client connect"))
+        .await
+    {
         Ok(res) => Ok(res),
         Err(err) => {
             warn!("Connection to {} failed, retrying...", addr);
@@ -28,6 +34,7 @@ async fn _connect(
 
 #[automock]
 impl Client {
+    #[instrument]
     async fn connect(addr: &SocketAddr) -> Result<Self, ClientError> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .map(jitter) // add jitter to delays
@@ -45,12 +52,23 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn health_check(addr: &SocketAddr) -> Result<(), ClientError> {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(HealthCheckRequest {});
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
         match client
             .grpc_client
-            .check_health(Request::new(HealthCheckRequest {}))
+            .check_health(request)
+            .instrument(info_span!("health_check"))
             .await
         {
             Ok(_) => Ok(()),
@@ -61,17 +79,28 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn introduce(
         addr: &SocketAddr,
         sender_addr: &SocketAddr,
     ) -> Result<Vec<SocketAddr>, ClientError> {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(IntroductionRequest {
+            sender_addr: sender_addr.to_string(),
+        });
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
         match client
             .grpc_client
-            .introduce(Request::new(IntroductionRequest {
-                sender_addr: sender_addr.to_string(),
-            }))
+            .introduce(request)
+            .instrument(info_span!("introduce"))
             .await
         {
             Ok(resp) => {
@@ -91,14 +120,24 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn get(addr: &SocketAddr, key: &Key) -> Result<(String, SocketAddr), ClientError> {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(GetRequest {
+            key: key.as_hex_string(),
+        });
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
         match client
             .grpc_client
-            .get(Request::new(GetRequest {
-                key: key.as_hex_string(),
-            }))
+            .get(request)
+            .instrument(info_span!("get"))
             .await
         {
             Ok(response) => {
@@ -117,6 +156,7 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn store(
         addr: &SocketAddr,
         value: String,
@@ -124,14 +164,19 @@ impl Client {
     ) -> Result<(Key, SocketAddr), ClientError> {
         let mut client = Self::connect(addr).await?;
 
-        match client
-            .grpc_client
-            .store(Request::new(StoreRequest {
-                value,
-                corpse: corpse_addr.map(|p| p.to_string()),
-            }))
-            .await
-        {
+        let mut request = Request::new(StoreRequest {
+            value,
+            corpse: corpse_addr.map(|p| p.to_string()),
+        });
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
+        match client.grpc_client.store(request).await {
             Ok(resp) => {
                 let StoreReply { key, stored_in } = resp.into_inner();
 
@@ -145,15 +190,25 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn move_values(
         addr: &SocketAddr,
         values: Vec<String>,
     ) -> Result<Vec<Key>, ClientError> {
         let mut client = Self::connect(addr).await?;
+        let mut request = Request::new(MoveValuesRequest { values });
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
 
         match client
             .grpc_client
-            .move_values(Request::new(MoveValuesRequest { values }))
+            .move_values(request)
+            .instrument(info_span!("move_values"))
             .await
         {
             Ok(resp) => {
@@ -170,6 +225,7 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn store_secondary(
         addr: &SocketAddr,
         value: String,
@@ -178,13 +234,23 @@ impl Client {
     ) -> Result<Key, ClientError> {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(SecondaryStoreRequest {
+            value,
+            primary_holder: primary_holder.to_string(),
+            corpse: corpse.map(|p| p.to_string()),
+        });
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
         match client
             .grpc_client
-            .store_secondary(Request::new(SecondaryStoreRequest {
-                value,
-                primary_holder: primary_holder.to_string(),
-                corpse: corpse.map(|p| p.to_string()),
-            }))
+            .store_secondary(request)
+            .instrument(info_span!("store_secondary"))
             .await
         {
             Ok(resp) => {
@@ -200,6 +266,7 @@ impl Client {
         }
     }
 
+    #[instrument]
     pub async fn get_status(
         addr: &SocketAddr,
     ) -> Result<
@@ -213,9 +280,19 @@ impl Client {
     > {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(GetStatusRequest {});
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
         match client
             .grpc_client
-            .get_status(Request::new(GetStatusRequest {}))
+            .get_status(request)
+            .instrument(info_span!("get_status"))
             .await
         {
             Ok(resp) => {
@@ -234,12 +311,23 @@ impl Client {
             })),
         }
     }
+    #[instrument]
     pub async fn shut_down(addr: &SocketAddr) -> Result<(), ClientError> {
         let mut client = Self::connect(addr).await?;
 
+        let mut request = Request::new(ShutDownRequest {});
+
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap(request.metadata_mut()),
+            )
+        });
+
         match client
             .grpc_client
-            .shut_down(Request::new(ShutDownRequest {}))
+            .shut_down(request)
+            .instrument(info_span!("shut_down"))
             .await
         {
             Ok(_) => Ok(()),
@@ -251,6 +339,19 @@ impl Client {
     }
 }
 
+struct MetadataMap<'a>(&'a mut tonic::metadata::MetadataMap);
+
+impl<'a> Injector for MetadataMap<'a> {
+    /// Set a key and value in the MetadataMap.  Does nothing if the key or value are not valid
+    /// inputs
+    fn set(&mut self, key: &str, value: String) {
+        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
+            if let Ok(val) = tonic::metadata::MetadataValue::from_str(&value) {
+                self.0.insert(key, val);
+            }
+        }
+    }
+}
 fn to_status_err(err: Status, addr: &SocketAddr) -> ClientError {
     ClientError::Status(StatusError {
         addr: addr.clone(),

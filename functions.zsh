@@ -130,7 +130,7 @@ function debugleave {
 	echo "press enter to monitor logs"
 	echo "and enter $4 values"
 	read
-	monitor_logs
+	# monitor_logs
 	sleep 1
 	enter_words $seed $n_words
 
@@ -144,9 +144,9 @@ function debugleave {
 	read
 	check
 
-	echo "press enter to close log windows"
-	read
-	close_logs
+	# echo "press enter to close log windows"
+	# read
+	# close_logs
 }
 
 
@@ -166,7 +166,7 @@ function debugjoin {
 	echo "press enter to monitor logs"
 	echo "and enter $4 values"
 	read
-	monitor_logs
+	# monitor_logs
 	sleep 1
 	enter_words $seed $n_words
 
@@ -180,9 +180,9 @@ function debugjoin {
 	read
 	check
 
-	echo "press enter to close log windows"
-	read
-	close_logs
+# 	echo "press enter to close log windows"
+# 	read
+# 	close_logs
 
 }
 

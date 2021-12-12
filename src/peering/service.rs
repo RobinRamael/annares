@@ -13,7 +13,10 @@ use tokio::time::Duration;
 
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
-use tracing::instrument;
+
+use opentelemetry::{global, propagation::Extractor};
+use tracing::*;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub async fn run_service(
     this_node: Arc<ThisNode>,
@@ -56,11 +59,15 @@ impl ThisNodeService {
 
 #[async_trait]
 impl NodeService for ThisNodeService {
-    #[instrument(skip(request, self))]
+    #[instrument]
     async fn introduce(
         &self,
         request: Request<IntroductionRequest>,
     ) -> Result<Response<IntroductionReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
+
         let IntroductionRequest { sender_addr, .. } = request.into_inner();
 
         let parsed_addr = sender_addr.parse().or(Err(Status::new(
@@ -75,8 +82,12 @@ impl NodeService for ThisNodeService {
             Err(IntroductionError::Common(err)) => Err(self.common_error_into_status(err)), // pass on status errors to the next node
         }
     }
-    #[instrument(skip(request, self))]
+    #[instrument]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
+
         let GetRequest { key, .. } = request.into_inner();
 
         let parsed_key = key
@@ -103,8 +114,11 @@ impl NodeService for ThisNodeService {
         }
     }
 
-    #[instrument(skip(request, self))]
+    #[instrument]
     async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
         let StoreRequest { value, corpse, .. } = request.into_inner();
 
         let parsed_corpse = corpse
@@ -123,11 +137,15 @@ impl NodeService for ThisNodeService {
         }
     }
 
-    #[instrument(skip(request, self))]
+    #[instrument]
     async fn store_secondary(
         &self,
         request: Request<SecondaryStoreRequest>,
     ) -> Result<Response<SecondaryStoreReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
+
         let SecondaryStoreRequest {
             value,
             primary_holder,
@@ -156,11 +174,14 @@ impl NodeService for ThisNodeService {
             Err(StoreError::Common(_)) => Err(Status::new(Code::Internal, "Internal Error")),
         }
     }
-    #[instrument(skip(request, self))]
+    #[instrument]
     async fn move_values(
         &self,
         request: Request<MoveValuesRequest>,
     ) -> Result<Response<MoveValuesReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
         let MoveValuesRequest { values } = request.into_inner();
 
         match self.node.move_values_rcvd(values).await {
@@ -170,19 +191,25 @@ impl NodeService for ThisNodeService {
             Err(MoveValuesError::Common(err)) => Err(self.common_error_into_status(err)),
         }
     }
-    #[instrument(skip(_request, self))]
+    #[instrument]
     async fn check_health(
         &self,
-        _request: Request<HealthCheckRequest>,
+        request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
         Ok(Response::new(HealthCheckReply {}))
     }
 
-    #[instrument(skip(_request, self))]
+    #[instrument]
     async fn get_status(
         &self,
-        _request: Request<GetStatusRequest>,
+        request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
         let primary_store = self.node.primary_store.read().await;
         let secondary_store = self.node.secondary_store.read().await;
         let secondant_map = self.node.secondant_map.read().await;
@@ -207,11 +234,14 @@ impl NodeService for ThisNodeService {
         }))
     }
 
-    #[instrument(skip(_request, self))]
+    #[instrument]
     async fn shut_down(
         &self,
-        _request: Request<ShutDownRequest>,
+        request: Request<ShutDownRequest>,
     ) -> Result<Response<ShutDownReply>, Status> {
+        let parent_cx =
+            global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        tracing::Span::current().set_parent(parent_cx);
         tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(50)).await;
             std::process::exit(0)
@@ -220,6 +250,26 @@ impl NodeService for ThisNodeService {
     }
 }
 
+struct MetadataMap<'a>(&'a tonic::metadata::MetadataMap);
+
+impl<'a> Extractor for MetadataMap<'a> {
+    /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str,
+    /// returns None
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|metadata| metadata.to_str().ok())
+    }
+
+    /// Collect all the keys from the MetadataMap.
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .map(|key| match key {
+                tonic::metadata::KeyRef::Ascii(v) => v.as_str(),
+                tonic::metadata::KeyRef::Binary(v) => v.as_str(),
+            })
+            .collect::<Vec<_>>()
+    }
+}
 impl From<(Key, String)> for KeyValuePair {
     fn from((key, value): (Key, String)) -> Self {
         KeyValuePair {

@@ -72,7 +72,7 @@ impl ThisNode {
         self.hash.cyclic_distance(&key)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_primary_store_read(&self) -> RwLockReadGuard<'_, HashMap<Key, String>> {
         match timeout(Duration::from_secs(3), self.primary_store.read()).await {
             Ok(x) => x,
@@ -83,7 +83,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_primary_store_write(&self) -> RwLockWriteGuard<'_, HashMap<Key, String>> {
         match timeout(Duration::from_secs(3), self.primary_store.write()).await {
             Ok(x) => x,
@@ -94,7 +94,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_secondary_store_read(
         &self,
     ) -> RwLockReadGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
@@ -107,7 +107,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_secondary_store_write(
         &self,
     ) -> RwLockWriteGuard<'_, HashMap<SocketAddr, HashMap<Key, String>>> {
@@ -120,7 +120,7 @@ impl ThisNode {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_secondant_map_read(
         &self,
     ) -> RwLockReadGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
@@ -132,7 +132,7 @@ impl ThisNode {
             }
         }
     }
-    #[instrument(skip(self), fields(this=?self.addr))]
+    #[instrument(skip(self), level = "debug", fields(this=?self.addr))]
     pub async fn acquire_secondant_map_write(
         &self,
     ) -> RwLockWriteGuard<'_, HashMap<Key, HashSet<OtherNode>>> {
@@ -187,9 +187,12 @@ impl ThisNode {
         let self_clone = Arc::clone(self);
         let new_peer_clone = new_peer.clone();
 
-        tokio::spawn(async move {
-            self_clone.clean_for(&new_peer_clone).await;
-        });
+        tokio::spawn(
+            async move {
+                self_clone.clean_for(&new_peer_clone).await;
+            }
+            .in_current_span(),
+        );
 
         Ok(old_peers)
     }
@@ -316,7 +319,10 @@ impl ThisNode {
                     warn!(value=?value, "Got value that was not meant for me, rerouting.");
                     let value = value.clone();
                     // FIXME: when this happens (succesfully or unsuccesfully) the value is not removed in the calling node.
-                    tokio::spawn(async move { Client::store(&peer.addr, value, None).await });
+                    tokio::spawn(
+                        async move { Client::store(&peer.addr, value, None).await }
+                            .in_current_span(),
+                    );
                 }
                 None => {
                     self.store_here(&key, value, None).await;
@@ -494,19 +500,22 @@ impl ThisNode {
                     let peer_clone = peer.clone();
                     let corpse_clone = corpse.cloned();
                     info!("Chose {:?} as secondant for {}", &peer, &value);
-                    tokio::spawn(async move {
-                        match Client::store_secondary(
-                            &peer_clone.addr,
-                            value,
-                            &primary_holder,
-                            corpse_clone.map(|p| p.addr),
-                        )
-                        .await
-                        {
-                            Ok(key) => Ok((peer_clone, key)),
-                            Err(err) => Err(err),
+                    tokio::spawn(
+                        async move {
+                            match Client::store_secondary(
+                                &peer_clone.addr,
+                                value,
+                                &primary_holder,
+                                corpse_clone.map(|p| p.addr),
+                            )
+                            .await
+                            {
+                                Ok(key) => Ok((peer_clone, key)),
+                                Err(err) => Err(err),
+                            }
                         }
-                    })
+                        .in_current_span(),
+                    )
                 })
                 .collect();
 
@@ -618,20 +627,26 @@ impl ThisNode {
             let self_clone = Arc::clone(self);
             let dead_peer_clone = dead_peer.clone();
 
-            tokio::spawn(async move {
-                self_clone
-                    .redistribute_primary_data_for(&dead_peer_clone)
-                    .await;
-            });
+            tokio::spawn(
+                async move {
+                    self_clone
+                        .redistribute_primary_data_for(&dead_peer_clone)
+                        .await;
+                }
+                .in_current_span(),
+            );
 
             let self_clone = Arc::clone(self);
             let dead_peer_clone = dead_peer.clone();
 
-            tokio::spawn(async move {
-                self_clone
-                    .redistribute_secondary_data_for(&dead_peer_clone)
-                    .await;
-            });
+            tokio::spawn(
+                async move {
+                    self_clone
+                        .redistribute_secondary_data_for(&dead_peer_clone)
+                        .await;
+                }
+                .in_current_span(),
+            );
         } else {
             info!("I had already forgotten.")
         }
@@ -663,11 +678,14 @@ impl ThisNode {
 
             let corpse_clone = corpse.clone();
 
-            tokio::spawn(async move {
-                self_clone
-                    .store_in_secondant_map(value, 1, Some(&corpse_clone))
-                    .await;
-            });
+            tokio::spawn(
+                async move {
+                    self_clone
+                        .store_in_secondant_map(value, 1, Some(&corpse_clone))
+                        .await;
+                }
+                .in_current_span(),
+            );
         }
     }
 
@@ -714,7 +732,7 @@ impl ThisNode {
                                     self_clone.store_in_primary(key, value.clone()).await;
                                     return Ok((key.clone(), value, self_clone.addr));
                                 }
-                            }})
+                            }}.in_current_span())
                         })
                         .collect();
 
@@ -775,7 +793,7 @@ pub struct Peers {
 }
 
 impl Peers {
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_read(&self) -> RwLockReadGuard<'_, HashMap<SocketAddr, OtherNode>> {
         match timeout(Duration::from_secs(3), self.known_peers.read()).await {
             Ok(x) => x,
@@ -786,7 +804,7 @@ impl Peers {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn acquire_write(&self) -> RwLockWriteGuard<'_, HashMap<SocketAddr, OtherNode>> {
         match timeout(Duration::from_secs(3), self.known_peers.write()).await {
             Ok(x) => x,
@@ -815,7 +833,7 @@ impl Peers {
             .min_by_key(|p| Instant::now() - p.last_seen)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn nearest_to(&self, key: &Key) -> Option<OtherNode> {
         let known_peers = self.acquire_read().await;
 
@@ -825,7 +843,7 @@ impl Peers {
             .min_by_key(|peer| peer.distance_to(key))
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn nearest_to_but_less_than(
         &self,
         key: &Key,
@@ -840,7 +858,7 @@ impl Peers {
         })
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn pick(&self, n: usize) -> Vec<OtherNode> {
         let known_peers = self.acquire_read().await;
 
@@ -854,7 +872,7 @@ impl Peers {
     }
 
     // returns the nodes before the new one was added!
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn introduce(&self, addr: &SocketAddr) -> (Vec<OtherNode>, OtherNode) {
         let mut peers = self.acquire_write().await;
 
@@ -867,7 +885,7 @@ impl Peers {
         (old_peers, new_peer)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub async fn len(&self) -> usize {
         let known_peers = self.acquire_read().await;
 

@@ -4,15 +4,16 @@ use structopt::StructOpt;
 
 use std::sync::Arc;
 use tracing::*;
-use tracing_appender;
-use tracing_subscriber;
 
 mod peering;
+use opentelemetry::global;
+use opentelemetry::sdk::propagation::TraceContextPropagator;
 use peering::health_check::spawn_health_check;
 use peering::service::run_service;
 use peering::this_node::ThisNode;
 use peering::utils;
 use tokio::time::Duration;
+use tracing_subscriber::prelude::*;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
@@ -30,15 +31,22 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file_appender = tracing_appender::rolling::never("/tmp/logs", "annares.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
-        .event_format(tracing_subscriber::fmt::format().compact())
-        .with_writer(non_blocking)
-        .init();
-
+    // Create a tracing layer with the configured tracer
     let args = Cli::from_args();
+
+    global::set_text_map_propagator(TraceContextPropagator::new());
+    let tracer = opentelemetry_jaeger::new_pipeline()
+        .with_service_name(format!("annares-{}", args.port))
+        // .with_max_packet_size(9_216)
+        .install_batch(opentelemetry::runtime::Tokio)?;
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new("INFO"))
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+        .try_init()?;
+
+    let root = span!(tracing::Level::INFO, "app_start", work_units = 2);
+    let _enter = root.enter();
+
     info!("Initializing {}", args.port);
 
     let addr = utils::ipv6_loopback_socketaddr(args.port);
@@ -61,6 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_service(this_node.clone(), args.port)
         .await
         .expect("Server crashed");
+
+    opentelemetry::global::shutdown_tracer_provider();
 
     Ok(())
 }

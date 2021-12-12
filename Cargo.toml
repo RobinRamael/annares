@@ -20,7 +20,6 @@ sha2 = "0.9.8"
 generic-array = "0.14.4"
 hex = "0.4.3"
 futures = "0.3.18"
-tracing = "0.1.29"
 strum = "0.23.0"
 strum_macros = "0.23.1"
 tracing-appender = "0.2.0"
@@ -31,9 +30,12 @@ mockall = "0.10.2"
 mockall_double = "0.2.0"
 maplit = "1.0.2"
 
-[dependencies.tracing-subscriber]
-features = ["std", "env-filter"]
-version = "0.3.3"
+opentelemetry = { version = "0.14", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.13", features = ["tokio"] }
+tracing = "0.1"
+tracing-subscriber = "0.2"
+tracing-opentelemetry = "0.13"
+tracing-futures = "0.2"
 
 [build-dependencies]
 tonic-build = "0.6"

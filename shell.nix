@@ -20,6 +20,8 @@ pkgs.mkShell rec {
   shellHook = ''
     export PATH=$PATH:~/.cargo/bin
     export PATH=$PATH:~/.rustup/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
+
+    export OTEL_BSP_MAX_EXPORT_BATCH_SIZE=16
   '';
   # Add libvmi precompiled library to rustc search path
   RUSTFLAGS = (builtins.map (a: "-L ${a}/lib") [ pkgs.libvmi ]);
