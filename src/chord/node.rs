@@ -68,11 +68,16 @@ impl ChordNode {
             .expect("Failed to get lock, panic!");
 
         if let Some(succ_pred) = Client::get_predecessor(&successor).await.expect("TODO") {
-            if succ_pred.is_between(&self, &successor.clone()) {
-                info!(successor=?succ_pred, "setting new successor");
+            info!("successors predecessor is {}", succ_pred);
+            if succ_pred != self.addr && succ_pred.is_between(&self, &successor.clone()) {
+                info!("{} is between {} and {}", succ_pred, self.addr, successor);
+                info!(successor=?succ_pred, old_successor=?successor, "setting new successor");
                 *successor = succ_pred;
             }
+        } else {
+            info!("Successor has no predecessor");
         }
+        info!("Notifying {} of our existence", successor);
         Client::notify(&successor, &self.addr).await.expect("TODO")
     }
 

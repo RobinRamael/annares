@@ -158,12 +158,27 @@ impl grpc::ChordService for ChordNodeService {
         Ok(Response::new(ShutDownReply {}))
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     async fn get_status(
         &self,
         request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusReply>, Status> {
-        todo!()
+        link_remote_span(&request);
+
+        match Arc::clone(&self.node).get_status().await {
+            Ok((successor, predecessor, store)) => Ok(Response::new(GetStatusReply {
+                successor: successor.to_string(),
+                predecessor: predecessor.map(|a| a.to_string()),
+                store: store
+                    .iter()
+                    .map(|(key, value)| grpc::KeyValuePair {
+                        key: key.as_hex_string(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            })),
+            Err(err) => Err(Status::new(Code::Internal, err.message)),
+        }
     }
 }
 

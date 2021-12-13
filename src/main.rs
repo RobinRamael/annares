@@ -20,16 +20,16 @@ use chord::node::ChordNode;
 use chord::service::run_service;
 
 mod keys;
-use self::keys::Key;
 
 mod utils;
 use utils::ipv6_loopback_socketaddr;
+use utils::parse_peer_flag;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
     port: u16,
 
-    #[structopt(short = "p", long = "peer")]
+    #[structopt(short = "p", long = "peer", parse(try_from_str=parse_peer_flag))]
     pub bootstrap_peer: Option<SocketAddr>,
 
     #[structopt(short = "i", long = "--check-interval", default_value = "2")]

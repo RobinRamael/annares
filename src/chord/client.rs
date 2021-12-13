@@ -34,7 +34,7 @@ async fn _connect(
     addr: &SocketAddr,
 ) -> Result<ChordServiceClient<tonic::transport::Channel>, tonic::transport::Error> {
     match ChordServiceClient::connect(utils::build_grpc_url(&addr))
-        .instrument(info_span!("client connect"))
+        .instrument(debug_span!("client connect"))
         .await
     {
         Ok(res) => Ok(res),
@@ -47,7 +47,7 @@ async fn _connect(
 
 #[mockall::automock]
 impl Client {
-    #[instrument]
+    #[instrument(level = "debug")]
     async fn connect(addr: &SocketAddr) -> Result<Self, ConnectionError> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .map(jitter) // add jitter to delays
