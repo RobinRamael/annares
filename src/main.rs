@@ -70,9 +70,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(port = args.port, "Starting stabilize loop...");
     let node_clone = Arc::clone(&node);
-    // tokio::spawn(async move {
-    //     stabilize_loop(node_clone, Duration::from_secs(args.check_interval)).await
-    // });
+    tokio::spawn(async move {
+        node_clone
+            .stabilization_loop(Duration::from_secs(args.check_interval))
+            .await
+    });
 
     info!(port = args.port, "Starting server...");
     run_service(node, args.port).await.expect("Server crashed");

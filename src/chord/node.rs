@@ -60,36 +60,35 @@ impl ChordNode {
         }
     }
 
-    //     #[instrument]
-    //     async fn stabilize(self: Arc<Self>) {
-    //         let mut successor = self
-    //             .acquire_successor_write_lock()
-    //             .await
-    //             .expect("Failed to get lock, panic!");
+    #[instrument]
+    async fn stabilize(self: Arc<Self>) {
+        let mut successor = self
+            .acquire_successor_write_lock()
+            .await
+            .expect("Failed to get lock, panic!");
 
-    //         if let Some(succ_pred) = Client::get_predecessor(&successor).await.expect("TODO") {
-    //             if succ_pred.is_between(&self, &successor.clone()) {
-    //                 info!(successor=?succ_pred, "setting new successor");
-    //                 *successor = succ_pred;
-    //             }
-    //         }
-    //         Client::notify(&successor, &self.addr).await.expect("TODO")
-    //     }
+        if let Some(succ_pred) = Client::get_predecessor(&successor).await.expect("TODO") {
+            if succ_pred.is_between(&self, &successor.clone()) {
+                info!(successor=?succ_pred, "setting new successor");
+                *successor = succ_pred;
+            }
+        }
+        Client::notify(&successor, &self.addr).await.expect("TODO")
+    }
 
-    //     #[instrument]
-    //     pub async fn stabilize_loop(self: Arc<Self>, interval: Duration) {
-    //         let self_clone = Arc::clone(&self);
-    //         let forever = tokio::task::spawn(async move {
-    //             let mut interval = tokio::time::interval(interval);
+    #[instrument]
+    pub async fn stabilization_loop(self: Arc<Self>, interval: Duration) {
+        let forever = tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
 
-    //             loop {
-    //                 interval.tick().await;
-    //                 self.stabilize();
-    //             }
-    //         })
-    //         .in_current_span();
-    //         forever.await.unwrap();
-    //     }
+            loop {
+                interval.tick().await;
+                self.clone().stabilize().await;
+            }
+        })
+        .in_current_span();
+        forever.await.unwrap();
+    }
 
     #[instrument]
     pub async fn get_predecessor(self: Arc<Self>) -> Result<Option<SocketAddr>, InternalError> {
