@@ -201,6 +201,56 @@ impl Client {
     }
 
     #[instrument]
+    pub async fn notify_successor_departure(
+        addr: &SocketAddr,
+        new_successor: &SocketAddr,
+    ) -> Result<(), ClientError> {
+        let mut client = Self::connect(addr)
+            .await
+            .map_err(ClientError::ConnectionFailed)?;
+
+        let mut request = Request::new(SuccDepartureRequest {
+            successor: new_successor.to_string(),
+        });
+
+        inject_span!(&mut request);
+
+        client
+            .grpc_client
+            .successor_departure(request)
+            .await
+            .map_err(ClientError::GRPCStatus)?;
+
+        Ok(())
+    }
+
+    #[instrument]
+    pub async fn notify_predecessor_departure(
+        addr: &SocketAddr,
+        predecessor: &Option<SocketAddr>,
+        values: Vec<String>,
+    ) -> Result<(), ClientError> {
+        let mut client = Self::connect(addr)
+            .await
+            .map_err(ClientError::ConnectionFailed)?;
+
+        let mut request = Request::new(PredDepartureRequest {
+            predecessor: predecessor.map(|a| a.to_string()),
+            values,
+        });
+
+        inject_span!(&mut request);
+
+        client
+            .grpc_client
+            .predecessor_departure(request)
+            .await
+            .map_err(ClientError::GRPCStatus)?;
+
+        Ok(())
+    }
+
+    #[instrument]
     pub async fn health_check(addr: &SocketAddr) -> Result<(), ClientError> {
         let mut client = Self::connect(addr)
             .await

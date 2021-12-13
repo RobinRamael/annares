@@ -1,4 +1,5 @@
 use opentelemetry::{global, propagation::Extractor};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
@@ -86,7 +87,7 @@ impl grpc::ChordService for ChordNodeService {
             .parse()
             .or(Err(Status::new(Code::InvalidArgument, "Malformed Addr")))?;
 
-        match Arc::clone(&self.node).notify(addr).await {
+        match Arc::clone(&self.node).process_notification(addr).await {
             Ok(values) => Ok(Response::new(NotifyReply { values })),
             Err(err) => Err(Status::new(Code::Internal, err.message)),
         }
@@ -129,11 +130,61 @@ impl grpc::ChordService for ChordNodeService {
             Ok(key) => Ok(Response::new(StoreReply {
                 key: key.as_hex_string(),
             })),
-            Err(StoreError::BadLocation) => Err(Status::new(
-                Code::FailedPrecondition,
-                "The princess should be in another castle",
-            )),
-            Err(StoreError::Internal(err)) => Err(Status::new(Code::Internal, err.message)),
+            Err(err) => Err(Status::new(Code::Internal, err.message)),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn predecessor_departure(
+        &self,
+        request: Request<grpc::PredDepartureRequest>,
+    ) -> Result<Response<grpc::PredDepartureReply>, Status> {
+        link_remote_span(&request);
+
+        let grpc::PredDepartureRequest {
+            predecessor,
+            values,
+        } = request.into_inner();
+
+        let predecessor = match predecessor {
+            Some(s) => {
+                let x = s
+                    .parse::<SocketAddr>()
+                    .map_err(|_| Status::new(Code::InvalidArgument, "Malformed Key"))?;
+
+                Some(x)
+            }
+            None => None,
+        };
+
+        match Arc::clone(&self.node)
+            .process_predecessor_departure(predecessor, values)
+            .await
+        {
+            Ok(()) => Ok(Response::new(PredDepartureReply {})),
+            Err(err) => Err(Status::new(Code::Internal, err.message)),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn successor_departure(
+        &self,
+        request: Request<grpc::SuccDepartureRequest>,
+    ) -> Result<Response<grpc::SuccDepartureReply>, Status> {
+        link_remote_span(&request);
+
+        let grpc::SuccDepartureRequest { successor } = request.into_inner();
+
+        let successor = successor
+            .parse::<SocketAddr>()
+            .map_err(|_| Status::new(Code::InvalidArgument, "Could not parse addr"))?;
+
+        match Arc::clone(&self.node)
+            .process_successor_departure(successor)
+            .await
+        {
+            Ok(()) => Ok(Response::new(SuccDepartureReply {})),
+            Err(err) => Err(Status::new(Code::Internal, err.message)),
         }
     }
 

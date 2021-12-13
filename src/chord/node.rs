@@ -108,7 +108,7 @@ impl ChordNode {
     }
 
     #[instrument]
-    pub async fn notify(
+    pub async fn process_notification(
         self: Arc<Self>,
         new_peer: SocketAddr,
     ) -> Result<Vec<String>, InternalError> {
@@ -130,6 +130,35 @@ impl ChordNode {
         Ok(values_to_move)
     }
 
+    #[instrument]
+    pub async fn process_predecessor_departure(
+        self: Arc<Self>,
+        new_predecessor: Option<SocketAddr>,
+        values: Vec<String>,
+    ) -> Result<(), InternalError> {
+        let mut predecessor = self.acquire_predecessor_write_lock().await?;
+        *predecessor = new_predecessor;
+
+        for value in values {
+            Arc::clone(&self).store_value(value).await?;
+        }
+
+        Ok(())
+    }
+
+    #[instrument]
+    pub async fn process_successor_departure(
+        self: Arc<Self>,
+        new_successor: SocketAddr,
+    ) -> Result<(), InternalError> {
+        let mut successor = self.acquire_successor_write_lock().await?;
+
+        info!(new_successor=?new_successor, old_successor=?successor, "Setting successor");
+        *successor = new_successor;
+
+        Ok(())
+    }
+
     async fn is_not_ours(&self, key: Key) -> Result<bool, InternalError> {
         Ok(!self
             .acquire_predecessor_read_lock()
@@ -148,24 +177,45 @@ impl ChordNode {
     }
 
     #[instrument]
-    pub async fn store_value(self: Arc<Self>, value: String) -> Result<Key, StoreError> {
+    pub async fn store_value(self: Arc<Self>, value: String) -> Result<Key, InternalError> {
+        let mut store = self.acquire_store_write_lock().await?;
         let key = Key::hash(&value);
-
-        let mut store = self
-            .acquire_store_write_lock()
-            .await
-            .map_err(|err| StoreError::Internal(err))?;
 
         store.insert(key, value);
         Ok(key)
     }
 
     #[instrument]
-    pub async fn shut_down(self: Arc<Self>) {
+    pub async fn shut_down(self: Arc<Self>) -> Result<(), InternalError> {
+        let successor = self.acquire_successor_read_lock().await?;
+        let predecessor = self.acquire_predecessor_read_lock().await?;
+        let data = self
+            .acquire_store_read_lock()
+            .await?
+            .iter()
+            // .cloned()
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>();
+
+        Client::notify_predecessor_departure(&successor, &predecessor, data)
+            .await
+            .map_err(|_| InternalError {
+                message: "Notifying predecessor failed".to_string(),
+            })?;
+
+        if let Some(predecessor) = predecessor.to_owned() {
+            Client::notify_successor_departure(&predecessor, &successor)
+                .await
+                .map_err(|_| InternalError {
+                    message: "notifying successor failed".to_string(),
+                })?;
+        }
+
         tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(50)).await;
             std::process::exit(0)
         });
+        Ok(())
     }
 
     #[instrument(level = "debug")]

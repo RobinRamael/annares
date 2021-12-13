@@ -6,6 +6,8 @@ service ChordService {
   rpc findSuccessor (FindSuccessorRequest) returns (FindSuccessorReply);
   rpc getPredecessor (GetPredecessorRequest) returns (GetPredecessorReply);
   rpc notify (NotifyRequest) returns (NotifyReply);
+  rpc predecessorDeparture (PredDepartureRequest) returns (PredDepartureReply);
+  rpc successorDeparture (SuccDepartureRequest) returns (SuccDepartureReply);
 
   rpc getKey (GetRequest) returns (GetReply);
   rpc storeValue (StoreRequest) returns (StoreReply);
@@ -37,6 +39,19 @@ message NotifyRequest {
 message NotifyReply {
   repeated string values = 1;
 }
+
+message PredDepartureRequest {
+  optional string predecessor = 1;
+  repeated string values = 2;
+}
+
+message PredDepartureReply {}
+
+message SuccDepartureRequest {
+  string successor = 1;
+}
+
+message SuccDepartureReply {}
 
 message GetRequest {
   string key = 1;

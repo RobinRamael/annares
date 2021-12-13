@@ -15,7 +15,6 @@ pub enum GetError {
 
 #[derive(Debug)]
 pub enum StoreError {
-    BadLocation,
     Internal(InternalError),
 }
 
