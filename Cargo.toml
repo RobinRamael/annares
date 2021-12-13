@@ -29,12 +29,12 @@ itertools = "0.10.3"
 mockall = "0.10.2"
 mockall_double = "0.2.0"
 maplit = "1.0.2"
-
 opentelemetry = { version = "0.14", features = ["rt-tokio"] }
 opentelemetry-jaeger = { version = "0.13", features = ["tokio"] }
 tracing = "0.1"
 tracing-subscriber = "0.2"
 tracing-opentelemetry = "0.13"
+lazy_static = "1.4.0"
 tracing-futures = "0.2"
 
 [build-dependencies]
@@ -42,4 +42,3 @@ tonic-build = "0.6"
 
 [dev-dependencies]
 quickcheck = "1.0.3"
-lazy_static = "1.4.0"

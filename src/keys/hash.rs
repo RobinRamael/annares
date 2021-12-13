@@ -91,12 +91,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         if N::to_usize() < 32 {
-            write!(
-                f,
-                "Arru8<{}> {{ {} }}",
-                N::to_usize(),
-                &self.as_hex_string()
-            )
+            write!(f, "Arru8<{}> {{ {:?} }}", N::to_usize(), self.arr)
         } else {
             write!(f, "Hash {{ {} }}", shorten(&self.as_hex_string()))
         }
@@ -150,11 +145,11 @@ where
         format!("{:02x}", self)
     }
 
-    pub fn is_between(&self, lower_bound: &Self, higher_bound: &Self) -> bool {
-        match lower_bound.cmp(higher_bound) {
-            Ordering::Less => self <= higher_bound - lower_bound,
-            Ordering::Greater => self >= higher_bound - lower_bound,
-            Ordering::Equal => self == lower_bound,
+    pub fn in_cyclic_range(&self, anticlockwise_bound: &Self, clockwise_bound: &Self) -> bool {
+        match anticlockwise_bound.cmp(&clockwise_bound) {
+            Ordering::Less => (anticlockwise_bound <= self) && (self <= clockwise_bound),
+            Ordering::Greater => !self.in_cyclic_range(clockwise_bound, anticlockwise_bound),
+            Ordering::Equal => true,
         }
     }
 }
@@ -372,13 +367,63 @@ mod tests {
     }
 
     #[test]
-    fn test_is_between() {
+    fn test_in_cyclic_range1() {
         let n_1 = Arru8::new(arr![u8;  16, 112]);
         let n_2 = Arru8::new(arr![u8;  208, 139]);
 
-        let n_m = Arru8::new(arr![u8; 192, 27]);
+        let n_m = Arru8::new(arr![u8; 192, 118]);
 
-        assert!(n_m.is_between(n_1, n_2))
+        assert!(n_m.in_cyclic_range(&n_1, &n_2));
+    }
+
+    #[test]
+    fn test_in_cyclic_range2() {
+        let n_1 = Arru8::new(arr![u8;  16, 255]);
+        let n_2 = Arru8::new(arr![u8;  208, 4]);
+
+        let n_m = Arru8::new(arr![u8; 192, 1]);
+
+        assert!(n_m.in_cyclic_range(&n_1, &n_2));
+        assert!(!n_m.in_cyclic_range(&n_2, &n_1));
+    }
+
+    #[test]
+    fn test_in_cyclic_range3() {
+        let n_1 = Arru8::new(arr![u8;  16, 255]);
+        let n_2 = Arru8::new(arr![u8;  208, 4]);
+
+        let n_m = Arru8::new(arr![u8; 192, 45]);
+
+        assert!(!n_m.in_cyclic_range(&n_1, &n_2));
+    }
+    #[test]
+    fn test_in_cyclic_range4() {
+        let n_1 = Arru8::new(arr![u8;  16, 243]);
+        let n_2 = Arru8::new(arr![u8;  16, 243]);
+
+        let n_m = Arru8::new(arr![u8; 192, 45]);
+
+        assert!(n_m.in_cyclic_range(&n_1, &n_2));
+    }
+
+    #[test]
+    fn test_in_cyclic_range5() {
+        let n_1 = Arru8::new(arr![u8;  16, 243]);
+        let n_2 = Arru8::new(arr![u8;  16, 243]);
+
+        let n_m = Arru8::new(arr![u8; 16, 243]);
+
+        assert!(n_m.in_cyclic_range(&n_1, &n_2));
+    }
+
+    #[test]
+    fn test_in_cyclic_range6() {
+        let n_1 = Arru8::new(arr![u8;  16, 243]);
+        let n_2 = Arru8::new(arr![u8;  16, 243]);
+
+        let n_m = Arru8::new(arr![u8; 17, 243]);
+
+        assert!(n_m.in_cyclic_range(&n_1, &n_2));
     }
 
     extern crate quickcheck;

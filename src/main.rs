@@ -8,13 +8,16 @@ use tracing::*;
 mod peering;
 use opentelemetry::global;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
-use peering::health_check::spawn_health_check;
-use peering::service::run_service;
-use peering::this_node::ThisNode;
+// use peering::health_check::spawn_health_check;
+// use peering::service::run_service;
+// use peering::this_node::ThisNode;
+
 use tokio::time::Duration;
 use tracing_subscriber::prelude::*;
 
 mod chord;
+use chord::node::ChordNode;
+use chord::service::run_service;
 
 mod keys;
 use self::keys::Key;
@@ -58,24 +61,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = ipv6_loopback_socketaddr(args.port);
 
-    let this_node = Arc::new(ThisNode::new(addr, args.redundancy));
+    let node = Arc::new(match args.bootstrap_peer {
+        Some(peer) => ChordNode::join(addr, peer)
+            .await
+            .expect("Failed to join network"),
+        None => ChordNode::new(addr, addr),
+    });
 
-    if let Some(bootstrap_peer) = args.bootstrap_peer {
-        info!("Mingling with {}...", bootstrap_peer);
-        let this_node_clone = Arc::clone(&this_node);
-        tokio::spawn(async move {
-            this_node_clone.mingle(&bootstrap_peer).await;
-        });
-    }
-
-    info!("Spawning health check...");
-
-    spawn_health_check(&this_node, Duration::from_secs(args.check_interval));
+    info!(port = args.port, "Starting stabilize loop...");
+    let node_clone = Arc::clone(&node);
+    // tokio::spawn(async move {
+    //     stabilize_loop(node_clone, Duration::from_secs(args.check_interval)).await
+    // });
 
     info!(port = args.port, "Starting server...");
-    run_service(this_node.clone(), args.port)
-        .await
-        .expect("Server crashed");
+    run_service(node, args.port).await.expect("Server crashed");
 
     opentelemetry::global::shutdown_tracer_provider();
 

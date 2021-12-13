@@ -46,6 +46,7 @@ function runs {
 	run_peers $runs_left $redundancy 5002
 }
 
+
 function run_peers {
 	runs=$1
 	redundancy=$2
@@ -147,6 +148,12 @@ function debugleave {
 	# echo "press enter to close log windows"
 	# read
 	# close_logs
+}
+
+function simple_runs {
+	build
+	killnodes
+	runs $1 $2
 }
 
 

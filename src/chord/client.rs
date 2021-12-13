@@ -19,6 +19,17 @@ pub struct Client {
     grpc_client: ChordServiceClient<tonic::transport::Channel>,
 }
 
+macro_rules! inject_span {
+    ($expression:expr) => {
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut MetadataMap($expression.metadata_mut()),
+            )
+        });
+    };
+}
+
 async fn _connect(
     addr: &SocketAddr,
 ) -> Result<ChordServiceClient<tonic::transport::Channel>, tonic::transport::Error> {
@@ -34,6 +45,7 @@ async fn _connect(
     }
 }
 
+#[mockall::automock]
 impl Client {
     #[instrument]
     async fn connect(addr: &SocketAddr) -> Result<Self, ConnectionError> {
@@ -60,12 +72,11 @@ impl Client {
             key: key.as_hex_string(),
         });
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         let resp = client
             .grpc_client
             .find_successor(request)
-            .instrument(info_span!("grpc:find_successor"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -86,12 +97,11 @@ impl Client {
 
         let mut request = Request::new(GetPredecessorRequest {});
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         let resp = client
             .grpc_client
             .get_predecessor(request)
-            .instrument(info_span!("grpc:get_predecessor"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -121,12 +131,11 @@ impl Client {
             addr: my_addr.to_string(),
         });
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         client
             .grpc_client
             .notify(request)
-            .instrument(info_span!("grpc:notify"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -143,12 +152,11 @@ impl Client {
             key: key.as_hex_string(),
         });
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         let resp = client
             .grpc_client
             .get_key(request)
-            .instrument(info_span!("grpc:get_key"))
             .await
             .map_err(|err| match err.code() {
                 Code::NotFound => ClientGetError::NotFound,
@@ -169,12 +177,11 @@ impl Client {
 
         let mut request = Request::new(StoreRequest { value });
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         let resp = client
             .grpc_client
             .store_value(request)
-            .instrument(info_span!("grpc:store_value"))
             .await
             .map_err(|err| match err.code() {
                 Code::FailedPrecondition => ClientStoreError::BadLocation,
@@ -196,12 +203,11 @@ impl Client {
 
         let mut request = Request::new(HealthCheckRequest {});
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         client
             .grpc_client
             .check_health(request)
-            .instrument(debug_span!("grpc:health_check"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -216,12 +222,11 @@ impl Client {
 
         let mut request = Request::new(ShutDownRequest {});
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         client
             .grpc_client
             .shut_down(request)
-            .instrument(warn_span!("grpc:shut_down"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -238,12 +243,11 @@ impl Client {
 
         let mut request = Request::new(GetStatusRequest {});
 
-        inject_span(&mut request);
+        inject_span!(&mut request);
 
         let response = client
             .grpc_client
             .get_status(request)
-            .instrument(debug_span!("grpc:get_status"))
             .await
             .map_err(ClientError::GRPCStatus)?;
 
@@ -285,16 +289,6 @@ impl Client {
         Ok((successor, predecessor, s))
     }
 }
-
-fn inject_span<T>(request: &mut Request<T>) {
-    global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(
-            &tracing::Span::current().context(),
-            &mut MetadataMap(request.metadata_mut()),
-        )
-    });
-}
-
 struct MetadataMap<'a>(&'a mut tonic::metadata::MetadataMap);
 
 impl<'a> Injector for MetadataMap<'a> {

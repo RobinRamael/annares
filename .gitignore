@@ -3,5 +3,6 @@ target
 words
 .currently_running
 .added_keys
+.added_values
 .history
 rust-toolchain
