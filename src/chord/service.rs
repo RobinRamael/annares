@@ -87,7 +87,7 @@ impl grpc::ChordService for ChordNodeService {
             .or(Err(Status::new(Code::InvalidArgument, "Malformed Addr")))?;
 
         match Arc::clone(&self.node).notify(addr).await {
-            Ok(()) => Ok(Response::new(NotifyReply {})),
+            Ok(values) => Ok(Response::new(NotifyReply { values })),
             Err(err) => Err(Status::new(Code::Internal, err.message)),
         }
     }

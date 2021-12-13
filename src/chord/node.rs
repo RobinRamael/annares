@@ -40,7 +40,7 @@ impl ChordNode {
                 message: format!("Failed to contact successor: {:?}", err),
             })?;
 
-        info!(successo=?successor, "Found successor, joining network");
+        info!(successor=?successor, "Found successor, joining network");
 
         Ok(ChordNode::new(addr, successor))
     }
@@ -78,7 +78,12 @@ impl ChordNode {
             info!("Successor has no predecessor");
         }
         info!("Notifying {} of our existence", successor);
-        Client::notify(&successor, &self.addr).await.expect("TODO")
+        let values_to_store = Client::notify(&successor, &self.addr).await.expect("TODO");
+        for value in values_to_store {
+            if let Err(err) = Arc::clone(&self).store_value(value.clone()).await {
+                error!("Failed to move value {}: {:?}", &value, err)
+            }
+        }
     }
 
     #[instrument]
@@ -103,14 +108,26 @@ impl ChordNode {
     }
 
     #[instrument]
-    pub async fn notify(self: Arc<Self>, new_peer: SocketAddr) -> Result<(), InternalError> {
+    pub async fn notify(
+        self: Arc<Self>,
+        new_peer: SocketAddr,
+    ) -> Result<Vec<String>, InternalError> {
         let mut predecessor = self.acquire_predecessor_write_lock().await?;
 
         if predecessor.is_none() || new_peer.is_between(&predecessor.unwrap(), &self) {
             info!(predecessor=?new_peer, "setting new predecessor");
             *predecessor = Some(new_peer);
         }
-        Ok(())
+        let mut data = self.acquire_store_write_lock().await?;
+
+        let values_to_move = data
+            .clone()
+            .iter()
+            .filter(|(key, value)| !key.is_between(&predecessor.unwrap(), &self))
+            .filter_map(|(key, value)| data.remove(key)) // this should never be None
+            .collect();
+
+        Ok(values_to_move)
     }
 
     async fn is_not_ours(&self, key: Key) -> Result<bool, InternalError> {
@@ -122,14 +139,6 @@ impl ChordNode {
 
     #[instrument]
     pub async fn get_key(self: Arc<Self>, key: Key) -> Result<String, GetError> {
-        if self
-            .is_not_ours(key)
-            .await
-            .map_err(|err| GetError::Internal(err))?
-        {
-            return Err(GetError::BadLocation);
-        }
-
         let store = self
             .acquire_store_read_lock()
             .await
@@ -141,14 +150,6 @@ impl ChordNode {
     #[instrument]
     pub async fn store_value(self: Arc<Self>, value: String) -> Result<Key, StoreError> {
         let key = Key::hash(&value);
-
-        if self
-            .is_not_ours(key)
-            .await
-            .map_err(|err| StoreError::Internal(err))?
-        {
-            return Err(StoreError::BadLocation);
-        }
 
         let mut store = self
             .acquire_store_write_lock()

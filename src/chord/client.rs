@@ -122,7 +122,10 @@ impl Client {
     }
 
     #[instrument]
-    pub async fn notify(addr: &SocketAddr, my_addr: &SocketAddr) -> Result<(), ClientError> {
+    pub async fn notify(
+        addr: &SocketAddr,
+        my_addr: &SocketAddr,
+    ) -> Result<Vec<String>, ClientError> {
         let mut client = Self::connect(addr)
             .await
             .map_err(ClientError::ConnectionFailed)?;
@@ -133,13 +136,15 @@ impl Client {
 
         inject_span!(&mut request);
 
-        client
+        let resp = client
             .grpc_client
             .notify(request)
             .await
             .map_err(ClientError::GRPCStatus)?;
 
-        Ok(())
+        let NotifyReply { values } = resp.into_inner();
+
+        Ok(values)
     }
 
     #[instrument]

@@ -33,7 +33,10 @@ message GetPredecessorReply {
 message NotifyRequest {
   string addr = 1;
 }
-message NotifyReply {}
+
+message NotifyReply {
+  repeated string values = 1;
+}
 
 message GetRequest {
   string key = 1;

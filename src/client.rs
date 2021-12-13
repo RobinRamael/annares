@@ -113,9 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             println!("Successor: {} ({})", successor, Key::from_addr(successor));
 
-            println!("\ndata: ");
+            println!("");
 
-            for (key, value) in data.into_iter().sorted() {
+            for (key, value) in data.into_iter().sorted_by_key(|(k, _)| k.clone()) {
                 println!("{}: {}", key, value);
             }
         }

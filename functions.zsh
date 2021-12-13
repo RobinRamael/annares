@@ -193,6 +193,32 @@ function debugjoin {
 
 }
 
+function debugchordjoin {
+	killnodes
+	build
+	run_first 5002
+	sleep 1
+	run 5003 5002
+	sleep 1
+	run 5004 5003
+	sleep 1
+	run 5005 5004
+	sleep 1
+	run 5006 5005
+
+	echo "press enter to monitor logs"
+	echo "and enter $1 values"
+	read
+	# monitor_logs
+	sleep 1
+	enter_words 20 $1
+
+	echo run 5001
+	read 
+	run 5001 5003
+
+}
+
 
 function shutdownrandomly {
 	peer=$(shuf -n 1 .currently_running)
