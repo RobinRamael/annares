@@ -20,6 +20,7 @@ use chord::node::ChordNode;
 use chord::service::run_service;
 
 mod keys;
+mod timed_lock;
 
 mod utils;
 use utils::ipv6_loopback_socketaddr;

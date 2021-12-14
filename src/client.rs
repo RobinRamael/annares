@@ -6,6 +6,7 @@ mod chord;
 use chord::client::Client;
 
 mod keys;
+mod timed_lock;
 use keys::Key;
 
 mod utils;

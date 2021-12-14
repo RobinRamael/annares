@@ -1,9 +1,16 @@
+use crate::timed_lock::LockError;
 use std::net::SocketAddr;
 use tonic::Status;
 
 #[derive(Clone, Debug)]
 pub struct InternalError {
     pub message: String,
+}
+
+impl LockError for InternalError {
+    fn new(message: String) -> Self {
+        InternalError { message }
+    }
 }
 
 #[derive(Debug)]
