@@ -51,12 +51,19 @@ impl ChordNode {
 
     #[instrument]
     pub async fn find_successor(self: Arc<Self>, key: Key) -> Result<SocketAddr, InternalError> {
-        let successor = self.acquire_successor_read_lock().await?;
+        let successor = self.successor.read().await?;
 
         if key.is_between(&self, &successor.clone()) {
             Ok(successor.clone())
         } else {
-            Client::find_successor(&successor, key)
+            let closest_preceding_node = Arc::clone(&self)
+                .closest_preceding_node(key)
+                .await?
+                .unwrap_or(successor.clone());
+
+            info!(closest=?closest_preceding_node, "Chose closest preceding node");
+
+            Client::find_successor(&closest_preceding_node, key)
                 .await
                 .map_err(|err| InternalError {
                     message: format!("Failed to contact successor: {:?}", err),
@@ -64,13 +71,24 @@ impl ChordNode {
         }
     }
 
+    async fn closest_preceding_node(
+        self: Arc<Self>,
+        key: Key,
+    ) -> Result<Option<SocketAddr>, InternalError> {
+        let finger_map = self.finger_map.read().await?;
+        let finger = finger_map
+            .into_iter()
+            .rev()
+            .filter_map(|addr| addr)
+            .find(|addr| addr.is_between(&self, &key))
+            .clone();
+
+        Ok(finger)
+    }
+
     #[instrument]
-    async fn stabilize(self: Arc<Self>) {
-        let mut successor = self
-            .successor
-            .write::<InternalError>()
-            .await
-            .expect("Failed to get lock, panic!");
+    async fn stabilize(self: Arc<Self>) -> Result<(), InternalError> {
+        let mut successor = self.successor.write::<InternalError>().await?;
 
         if let Some(succ_pred) = Client::get_predecessor(&successor).await.expect("TODO") {
             info!("successors predecessor is {}", succ_pred);
@@ -86,19 +104,49 @@ impl ChordNode {
         let values_to_store = Client::notify(&successor, &self.addr).await.expect("TODO");
         for value in values_to_store {
             if let Err(err) = Arc::clone(&self).store_value(value.clone()).await {
-                error!("Failed to move value {}: {:?}", &value, err)
+                error!("Failed to move value {}: {:?}", &value, err);
             }
         }
+
+        Ok(())
+    }
+
+    async fn fix_finger(self: Arc<Self>, idx: usize) -> Result<(), InternalError> {
+        // n + 2^(idx)
+        let finger_key = Arc::clone(&self)
+            .key
+            .cyclic_add(Key::two_to_the_power_of(idx));
+
+        let finger = Arc::clone(&self).find_successor(finger_key).await?;
+
+        let mut finger_map = self.finger_map.write::<InternalError>().await?;
+
+        if finger_map[idx] != Some(finger) {
+            info!(new_finger=%finger, idx=idx, "Setting new finger for index")
+        }
+
+        finger_map[idx] = Some(finger);
+
+        Ok(())
     }
 
     #[instrument]
     pub async fn stabilization_loop(self: Arc<Self>, interval: Duration) {
         let forever = tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(interval);
+            let mut idxs = (0..255).cycle();
 
             loop {
                 interval.tick().await;
-                self.clone().stabilize().await;
+
+                Arc::clone(&self).stabilize().await.unwrap_or_else(|err| {
+                    error!("Error when stabilizing: {}", err.message);
+                });
+
+                Arc::clone(&self)
+                    .fix_finger(idxs.next().unwrap())
+                    .await
+                    .unwrap_or_else(|err| error!("Error when fixing finger: {}", err.message));
             }
         })
         .in_current_span();
@@ -126,8 +174,8 @@ impl ChordNode {
         let values_to_move = data
             .clone()
             .iter()
-            .filter(|(key, value)| !key.is_between(&predecessor.unwrap(), &self))
-            .filter_map(|(key, value)| data.remove(key)) // this should never be None
+            .filter(|(key, _)| !key.is_between(&predecessor.unwrap(), &self))
+            .filter_map(|(key, _)| data.remove(key)) // this should never be None
             .collect();
 
         Ok(values_to_move)
@@ -160,14 +208,6 @@ impl ChordNode {
         *successor = new_successor;
 
         Ok(())
-    }
-
-    async fn is_not_ours(&self, key: Key) -> Result<bool, InternalError> {
-        Ok(!self
-            .predecessor
-            .read()
-            .await?
-            .map_or_else(|| false, |predecessor| key.is_between(&predecessor, self)))
     }
 
     #[instrument]
@@ -227,12 +267,26 @@ impl ChordNode {
     #[instrument(level = "debug")]
     pub async fn get_status(
         self: Arc<Self>,
-    ) -> Result<(SocketAddr, Option<SocketAddr>, HashMap<Key, String>), InternalError> {
+    ) -> Result<
+        (
+            SocketAddr,
+            Option<SocketAddr>,
+            HashMap<Key, String>,
+            [Option<SocketAddr>; 256],
+        ),
+        InternalError,
+    > {
         let succ = self.successor.read().await?;
         let pred = self.predecessor.read().await?;
         let store = self.store.read().await?;
+        let finger_map = self.finger_map.read().await?;
 
-        Ok((succ.clone(), pred.clone(), store.clone()))
+        Ok((
+            succ.clone(),
+            pred.clone(),
+            store.clone(),
+            finger_map.clone(),
+        ))
     }
 }
 
@@ -317,7 +371,6 @@ mod tests {
         let ctx = Client::find_successor_context();
         ctx.expect().return_once(|addr, key| {
             assert_eq!(addr, &a(1111));
-            dbg!(key);
             Ok(a(1111))
         });
 

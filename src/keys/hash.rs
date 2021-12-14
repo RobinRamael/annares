@@ -128,11 +128,10 @@ where
         Arru8::new(halfway)
     }
 
-    fn two_to_the_power_of(k: usize) -> Self {
+    pub fn two_to_the_power_of(k: usize) -> Self {
         let mut res = GenericArray::default();
         let m = k % 8;
         let idx = (k - m) / 8;
-        // assert!(m <= 4);
         res[idx] = pow(2u8, m);
         Arru8::new(res)
     }
@@ -145,7 +144,7 @@ where
         }
     }
 
-    fn cyclic_add(self, rhs: Self) -> Self {
+    pub fn cyclic_add(self, rhs: Self) -> Self {
         if self > rhs {
             rhs.cyclic_add(self)
         } else {
@@ -250,7 +249,6 @@ where
 }
 
 fn carry_add(a: u8, b: u8, carry: u8) -> (u8, u8) {
-    dbg!((a, b, carry));
     assert!(carry == 1 || carry == 0);
     // holy branching, batman!
     if a > b {

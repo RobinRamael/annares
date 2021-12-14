@@ -291,7 +291,15 @@ impl Client {
     // #[instrument]
     pub async fn get_status(
         addr: &SocketAddr,
-    ) -> Result<(SocketAddr, Option<SocketAddr>, HashMap<Key, String>), ClientError> {
+    ) -> Result<
+        (
+            SocketAddr,
+            Option<SocketAddr>,
+            HashMap<Key, String>,
+            Vec<(u8, Option<SocketAddr>)>,
+        ),
+        ClientError,
+    > {
         let mut client = Self::connect(addr)
             .await
             .map_err(ClientError::ConnectionFailed)?;
@@ -310,6 +318,7 @@ impl Client {
             successor,
             predecessor,
             store,
+            fingers,
         } = response.into_inner();
 
         let successor = successor.parse().map_err(|_| {
@@ -339,9 +348,23 @@ impl Client {
             })
             .collect::<Result<Vec<(Key, String)>, ClientError>>()?;
 
-        let s: HashMap<Key, String> = HashMap::from_iter(pairs.into_iter());
+        let store: HashMap<Key, String> = HashMap::from_iter(pairs.into_iter());
 
-        Ok((successor, predecessor, s))
+        let mut parsed_fingers = vec![];
+        for finger in fingers {
+            let finger_addr = match finger.addr {
+                Some(addr) => {
+                    let f = addr.parse::<SocketAddr>().map_err(|_| {
+                        ClientError::MalformedResponse(format!("could not parse addr {}", addr))
+                    })?;
+                    Some(f)
+                }
+                None => None,
+            };
+            parsed_fingers.push((finger.start_idx as u8, finger_addr))
+        }
+
+        Ok((successor, predecessor, store, parsed_fingers))
     }
 }
 struct MetadataMap<'a>(&'a mut tonic::metadata::MetadataMap);

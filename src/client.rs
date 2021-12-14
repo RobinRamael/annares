@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("was in {}", holding_node);
         }
         Cli::GetStatus(cfg) => {
-            let (successor, predecessor, data) = Client::get_status(&cfg.base.peer)
+            let (successor, predecessor, data, fingers) = Client::get_status(&cfg.base.peer)
                 .await
                 .expect("Failed to get status");
 
@@ -113,6 +113,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or("".to_string()),
             );
             println!("Successor: {} ({})", successor, Key::from_addr(successor));
+
+            println!("");
+
+            println!("Fingers:");
+
+            for (idx, finger) in fingers {
+                println!(
+                    "  {}: {} {}",
+                    idx,
+                    finger.map(|p| p.to_string()).unwrap_or(" - ".to_string()),
+                    finger
+                        .map(|p| format!("({})", Key::from_addr(p)))
+                        .unwrap_or("".to_string()),
+                )
+            }
 
             println!("");
 

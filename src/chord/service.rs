@@ -205,7 +205,10 @@ impl grpc::ChordService for ChordNodeService {
     ) -> Result<Response<ShutDownReply>, Status> {
         link_remote_span(&request);
 
-        Arc::clone(&self.node).shut_down().await;
+        Arc::clone(&self.node)
+            .shut_down()
+            .await
+            .expect("Failed to shut down?!");
         Ok(Response::new(ShutDownReply {}))
     }
 
@@ -217,7 +220,7 @@ impl grpc::ChordService for ChordNodeService {
         link_remote_span(&request);
 
         match Arc::clone(&self.node).get_status().await {
-            Ok((successor, predecessor, store)) => Ok(Response::new(GetStatusReply {
+            Ok((successor, predecessor, store, finger_map)) => Ok(Response::new(GetStatusReply {
                 successor: successor.to_string(),
                 predecessor: predecessor.map(|a| a.to_string()),
                 store: store
@@ -227,10 +230,30 @@ impl grpc::ChordService for ChordNodeService {
                         value: value.clone(),
                     })
                     .collect(),
+                fingers: sparse_fingers(finger_map),
             })),
             Err(err) => Err(Status::new(Code::Internal, err.message)),
         }
     }
+}
+
+fn sparse_fingers(finger_map: [Option<SocketAddr>; 256]) -> Vec<Finger> {
+    let mut res = vec![];
+    let mut current_finger = finger_map[0];
+    let mut current_start = 0;
+
+    for i in 1..255 {
+        if current_finger != finger_map[i] {
+            res.push(Finger {
+                start_idx: current_start as u32,
+                addr: current_finger.map(|f| f.to_string()),
+            });
+            current_finger = finger_map[i];
+            current_start = i;
+        }
+    }
+
+    res
 }
 
 struct MetadataMap<'a>(&'a tonic::metadata::MetadataMap);

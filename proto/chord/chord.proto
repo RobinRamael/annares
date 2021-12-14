@@ -78,10 +78,16 @@ message KeyValuePair {
   string value = 2;
 }
 
+message Finger {
+  uint32 start_idx = 1;
+  optional string addr = 2;
+}
+
 message GetStatusReply {
   string successor = 1;
   optional string predecessor = 2;
   repeated KeyValuePair store = 3;
+  repeated Finger fingers = 4;
 }
 
 message HealthCheckRequest {}
