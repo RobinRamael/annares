@@ -20,8 +20,8 @@ function run_first() {
 	port=$1
 	redundancy=$2
 
-	echo annares-node $port --redundancy $redundancy
-	annares-node $port --redundancy $redundancy &
+	echo annares-node $port --redundancy $redundancy --check-interval $CHECK_INTERVAL
+	annares-node $port --redundancy $redundancy --check-interval $CHECK_INTERVAL &
 	echo $port >>.currently_running
 }
 
@@ -30,8 +30,8 @@ function run() {
 	peer=$2
 	redundancy=$3
 
-	echo annares-node $port --peer "[::1]:$peer" --redundancy $redundancy
-	annares-node $port --peer "[::1]:$peer" --redundancy $redundancy &
+	echo annares-node $port --peer "[::1]:$peer" --redundancy $redundancy  --check-interval $CHECK_INTERVAL
+	annares-node $port --peer "[::1]:$peer" --redundancy $redundancy --check-interval $CHECK_INTERVAL &
 }
 
 function runs {
@@ -150,9 +150,14 @@ function debugleave {
 	# close_logs
 }
 
+function restart_jaeger {
+	docker restart 81fa19288648
+}
+
 function simple_runs {
 	build
 	killnodes
+	restart_jaeger
 	runs $1 $2
 }
 

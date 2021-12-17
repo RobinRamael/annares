@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::net::SocketAddr;
 
 use std::collections::HashMap;
@@ -54,6 +55,13 @@ impl ChordNode {
         let successor = self.successor.read().await?;
 
         if key.is_between(&self, &successor.clone()) {
+            info!(
+                "{:?} is between {:?} and {:?}",
+                key.arr,
+                self.key().arr,
+                successor.key().arr
+            );
+            info!(successor=?successor, successor_key=?successor.key(), "Our successor is the closest preceding.");
             Ok(successor.clone())
         } else {
             let closest_preceding_node = Arc::clone(&self)
@@ -111,11 +119,14 @@ impl ChordNode {
         Ok(())
     }
 
+    #[instrument]
     async fn fix_finger(self: Arc<Self>, idx: usize) -> Result<(), InternalError> {
         // n + 2^(idx)
         let finger_key = Arc::clone(&self)
             .key
             .cyclic_add(Key::two_to_the_power_of(idx));
+
+        info!(finger_key=?finger_key, "Fixing finger for key");
 
         let finger = Arc::clone(&self).find_successor(finger_key).await?;
 
@@ -130,12 +141,14 @@ impl ChordNode {
         Ok(())
     }
 
-    #[instrument]
     pub async fn stabilization_loop(self: Arc<Self>, interval: Duration) {
         let forever = tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(interval);
-            let mut idxs = (0..255).cycle();
+            let mut idxs = (0..=255).cycle();
 
+            let s = info_span!("stabilization_loop");
+
+            let _e = s.enter();
             loop {
                 interval.tick().await;
 
@@ -290,7 +303,7 @@ impl ChordNode {
     }
 }
 
-trait Locatable {
+pub trait Locatable {
     fn key(&self) -> Key;
     fn is_between(&self, bound_1: &impl Locatable, bound_2: &impl Locatable) -> bool {
         self.key().in_cyclic_range(&bound_1.key(), &bound_2.key())

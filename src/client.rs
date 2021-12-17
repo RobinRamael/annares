@@ -1,9 +1,14 @@
 use itertools::*;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::BufReader;
 use std::net::SocketAddr;
+use std::path::Path;
 use structopt::StructOpt;
 
 mod chord;
 use chord::client::Client;
+use chord::node::Locatable;
 
 mod keys;
 mod timed_lock;
@@ -37,6 +42,9 @@ struct GetKeyArgs {
 struct GetStatusArgs {
     #[structopt(flatten)]
     base: BaseCli,
+
+    #[structopt(short, long)]
+    long: bool,
 }
 
 #[derive(StructOpt, Debug)]
@@ -59,6 +67,9 @@ enum Cli {
 
     #[structopt(name = "shutdown")]
     ShutDown(ShutDownArgs),
+
+    #[structopt(name = "overview")]
+    Overview,
 }
 
 #[tokio::main]
@@ -118,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Fingers:");
 
-            for (idx, finger) in fingers {
+            for (idx, finger) in fingers.iter() {
                 println!(
                     "  {}: {} {}",
                     idx,
@@ -134,6 +145,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (key, value) in data.into_iter().sorted_by_key(|(k, _)| k.clone()) {
                 println!("{}: {}", key, value);
             }
+
+            if cfg.long {
+                println!("");
+
+                let finger_keys: Vec<_> = fingers
+                    .into_iter()
+                    .map(|(_, f)| f)
+                    .filter_map(|f| f)
+                    .map(|f| (f.key(), f))
+                    .collect();
+
+                let finger_locations: Vec<Key> = (0..255)
+                    .map(|idx| {
+                        cfg.base
+                            .peer
+                            .key()
+                            .cyclic_add(Key::two_to_the_power_of(idx))
+                    })
+                    .collect();
+
+                for i in 0..=255 {
+                    print!("{}: ", i);
+                    if cfg.base.peer.key().arr[31] == i {
+                        print!("HOME ");
+                    }
+                    for (j, loc) in finger_locations.iter().enumerate() {
+                        if loc.arr[31] == i {
+                            print!("{} ({}), ", j, loc);
+                        }
+                    }
+                    for (key, addr) in finger_keys.iter() {
+                        if key.arr[31] == i {
+                            print!("{} ({}), ", addr, key)
+                        }
+                    }
+                    println!("");
+                }
+            }
+        }
+        Cli::Overview => {
+            let addrs: Vec<_> = readlines("./.currently_running")
+                .iter()
+                .map(|ln| {
+                    utils::ipv6_loopback_socketaddr(ln.parse().expect("failed to parse address"))
+                })
+                .collect();
+
+            let value_keys: Vec<Key> = readlines("./.added_keys")
+                .into_iter()
+                .map(|s| s.try_into().expect("failed to parse keys"))
+                .collect();
+
+            let addr_keys: Vec<_> = addrs.iter().map(|a| (a.key(), a)).collect();
+
+            for i in 0..255 {
+                print!("{}: ", i);
+                for (key, addr) in addr_keys.iter() {
+                    if key.arr[31] == i {
+                        print!("{} ({}), ", addr, key)
+                    }
+                }
+                for key in &value_keys {
+                    if key.arr[31] == i {
+                        print!("{} (key), ", key);
+                    }
+                }
+                println!("");
+            }
         }
         Cli::ShutDown(cfg) => {
             Client::shut_down(&cfg.base.peer)
@@ -143,4 +222,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     Ok(())
+}
+
+fn readlines(path: &str) -> Vec<String> {
+    let nodes_file = File::open(path).expect("no such file");
+    let buf = BufReader::new(nodes_file);
+    buf.lines()
+        .map(|ln| ln.expect("Could not parse line"))
+        .collect()
 }
