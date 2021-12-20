@@ -1,5 +1,5 @@
 use opentelemetry::{global, propagation::Extractor};
-use std::net::SocketAddr;
+use std::net::{AddrParseError, SocketAddr};
 use std::sync::Arc;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
@@ -60,15 +60,16 @@ impl grpc::ChordService for ChordNodeService {
     }
 
     #[instrument(skip(self))]
-    async fn get_predecessor(
+    async fn get_neighbours(
         &self,
-        request: Request<grpc::GetPredecessorRequest>,
-    ) -> Result<Response<grpc::GetPredecessorReply>, Status> {
+        request: Request<grpc::GetNeighboursRequest>,
+    ) -> Result<Response<grpc::GetNeighboursReply>, Status> {
         link_remote_span(&request);
 
-        match Arc::clone(&self.node).get_predecessor().await {
-            Ok(pred_addr) => Ok(Response::new(GetPredecessorReply {
-                addr: pred_addr.and_then(|a| Some(a.to_string())),
+        match Arc::clone(&self.node).get_neighbours().await {
+            Ok((pred_addr, successor_addrs)) => Ok(Response::new(GetNeighboursReply {
+                predecessor: pred_addr.and_then(|a| Some(a.to_string())),
+                successors: successor_addrs.iter().map(|a| a.to_string()).collect(),
             })),
             Err(err) => Err(Status::new(Code::Internal, err.message)),
         }
@@ -173,14 +174,16 @@ impl grpc::ChordService for ChordNodeService {
     ) -> Result<Response<grpc::SuccDepartureReply>, Status> {
         link_remote_span(&request);
 
-        let grpc::SuccDepartureRequest { successor } = request.into_inner();
+        let grpc::SuccDepartureRequest { successors } = request.into_inner();
 
-        let successor = successor
-            .parse::<SocketAddr>()
+        let successors = successors
+            .iter()
+            .map(|s| s.parse::<SocketAddr>())
+            .collect::<Result<Vec<SocketAddr>, AddrParseError>>()
             .map_err(|_| Status::new(Code::InvalidArgument, "Could not parse addr"))?;
 
         match Arc::clone(&self.node)
-            .process_successor_departure(successor)
+            .process_successor_departure(successors)
             .await
         {
             Ok(()) => Ok(Response::new(SuccDepartureReply {})),
@@ -220,8 +223,8 @@ impl grpc::ChordService for ChordNodeService {
         link_remote_span(&request);
 
         match Arc::clone(&self.node).get_status().await {
-            Ok((successor, predecessor, store, finger_map)) => Ok(Response::new(GetStatusReply {
-                successor: successor.to_string(),
+            Ok((successors, predecessor, store, finger_map)) => Ok(Response::new(GetStatusReply {
+                successors: successors.iter().map(|a| a.to_string()).collect(),
                 predecessor: predecessor.map(|a| a.to_string()),
                 store: store
                     .iter()

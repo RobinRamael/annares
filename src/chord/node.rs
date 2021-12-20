@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 use std::net::SocketAddr;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::iter::once;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::*;
@@ -18,19 +19,26 @@ use crate::keys::Key;
 pub struct ChordNode {
     addr: SocketAddr,
     key: Key,
-    successor: Arc<TimedRwLock<SocketAddr>>,
+    redundancy: usize,
+    successor_list: Arc<TimedRwLock<VecDeque<SocketAddr>>>,
     predecessor: Arc<TimedRwLock<Option<SocketAddr>>>,
     finger_map: Arc<TimedRwLock<[Option<SocketAddr>; 256]>>,
     store: Arc<TimedRwLock<HashMap<Key, String>>>,
 }
 
 impl ChordNode {
-    pub fn new(addr: SocketAddr, successor: SocketAddr) -> Self {
+    pub fn new(addr: SocketAddr, successor: Option<SocketAddr>, redundancy: usize) -> Self {
+        let succs = match successor {
+            Some(s) => vec![s],
+            None => vec![],
+        };
+
         let lock_timeout = Duration::from_secs(3);
         ChordNode {
             addr,
+            redundancy,
             key: Key::from_addr(addr),
-            successor: Arc::new(TimedRwLock::new(successor, lock_timeout)),
+            successor_list: Arc::new(TimedRwLock::new(VecDeque::from(succs), lock_timeout)),
             predecessor: Arc::new(TimedRwLock::new(None, lock_timeout)),
             finger_map: Arc::new(TimedRwLock::new([None; 256], lock_timeout)),
             store: Arc::new(TimedRwLock::new(HashMap::new(), lock_timeout)),
@@ -38,7 +46,11 @@ impl ChordNode {
     }
 
     #[instrument]
-    pub async fn join(addr: SocketAddr, peer: SocketAddr) -> Result<Self, InternalError> {
+    pub async fn join(
+        addr: SocketAddr,
+        peer: SocketAddr,
+        redundancy: usize,
+    ) -> Result<Self, InternalError> {
         let successor = Client::find_successor(&peer, Key::from_addr(addr))
             .await
             .map_err(|err| InternalError {
@@ -47,12 +59,17 @@ impl ChordNode {
 
         info!(successor=?successor, "Found successor, joining network");
 
-        Ok(ChordNode::new(addr, successor))
+        Ok(ChordNode::new(addr, Some(successor), redundancy))
     }
 
     #[instrument]
     pub async fn find_successor(self: Arc<Self>, key: Key) -> Result<SocketAddr, InternalError> {
-        let successor = self.successor.read().await?;
+        let successor_list = self.successor_list.read().await?;
+
+        let successor = match successor_list.front() {
+            Some(s) => s,
+            None => return Ok(self.addr), // we're all alone, so we're our own successor
+        };
 
         if key.is_between(&self, &successor.clone()) {
             info!(
@@ -96,23 +113,56 @@ impl ChordNode {
 
     #[instrument]
     async fn stabilize(self: Arc<Self>) -> Result<(), InternalError> {
-        let mut successor = self.successor.write::<InternalError>().await?;
+        let successor_list = self.successor_list.read::<InternalError>().await?;
 
-        if let Some(succ_pred) = Client::get_predecessor(&successor).await.expect("TODO") {
-            info!("successors predecessor is {}", succ_pred);
-            if succ_pred != self.addr && succ_pred.is_between(&self, &successor.clone()) {
+        let successor = match successor_list.front() {
+            Some(s) => s.clone(),
+            None => return Ok(()), // can't stabilize if we're all alone
+        };
+
+        drop(successor_list);
+
+        let (succ_pred, succ_successors) = Client::get_neighbours(&successor).await.expect("TODO");
+        info!("successors predecessor is {:?}", succ_pred);
+        info!("successors successors are {:?}", succ_successors);
+
+        let new_successor_list = match succ_pred {
+            Some(succ_pred)
+                if succ_pred != self.addr && succ_pred.is_between(&self, &successor.clone()) =>
+            {
                 info!("{} is between {} and {}", succ_pred, self.addr, successor);
                 info!(successor=?succ_pred, old_successor=?successor, "setting new successor");
-                *successor = succ_pred;
+
+                once(succ_pred)
+                    .chain(once(successor))
+                    .chain(succ_successors.into_iter().take(self.redundancy - 2))
+                    .collect()
             }
-        } else {
-            info!("Successor has no predecessor");
-        }
-        info!("Notifying {} of our existence", successor);
-        let values_to_store = Client::notify(&successor, &self.addr).await.expect("TODO");
-        for value in values_to_store {
-            if let Err(err) = Arc::clone(&self).store_value(value.clone()).await {
-                error!("Failed to move value {}: {:?}", &value, err);
+            _ => {
+                info!("not changing immediate successor");
+                once(successor)
+                    .chain(succ_successors.into_iter().take(self.redundancy - 1))
+                    .collect()
+            }
+        };
+
+        let mut successor_list = self.successor_list.write::<InternalError>().await?;
+
+        info!(new_successor_list=?new_successor_list, old_successor_list=?successor_list, "Replacing successor list");
+        *successor_list = new_successor_list;
+
+        if let Some(immediate_successor) = successor_list.front().cloned() {
+            drop(successor_list);
+
+            info!("Notifying {:?} of our existence", immediate_successor);
+            let values_to_store = Client::notify(&immediate_successor, &self.addr)
+                .await
+                .expect("TODO");
+
+            for value in values_to_store {
+                if let Err(err) = Arc::clone(&self).store_value(value.clone()).await {
+                    error!("Failed to move value {}: {:?}", &value, err);
+                }
             }
         }
 
@@ -126,9 +176,13 @@ impl ChordNode {
             .key
             .cyclic_add(Key::two_to_the_power_of(idx));
 
-        info!(finger_key=?finger_key, "Fixing finger for key");
-
         let finger = Arc::clone(&self).find_successor(finger_key).await?;
+
+        info!(finger_key=?finger_key, finger=?finger, "Finger for key found");
+
+        if finger == self.addr {
+            return Ok(()); // don't store ourselves as finger
+        }
 
         let mut finger_map = self.finger_map.write::<InternalError>().await?;
 
@@ -167,8 +221,13 @@ impl ChordNode {
     }
 
     #[instrument]
-    pub async fn get_predecessor(self: Arc<Self>) -> Result<Option<SocketAddr>, InternalError> {
-        self.predecessor.read().await.map(|p| p.clone())
+    pub async fn get_neighbours(
+        self: Arc<Self>,
+    ) -> Result<(Option<SocketAddr>, Vec<SocketAddr>), InternalError> {
+        let pred = self.predecessor.read().await?.clone();
+        let succs = self.successor_list.read().await?.as_cloned_vec();
+
+        Ok((pred, succs))
     }
 
     #[instrument]
@@ -181,6 +240,10 @@ impl ChordNode {
         if predecessor.is_none() || new_peer.is_between(&predecessor.unwrap(), &self) {
             info!(predecessor=?new_peer, "setting new predecessor");
             *predecessor = Some(new_peer);
+            let mut successor_list = self.successor_list.write().await?;
+            if successor_list.len() < self.redundancy {
+                successor_list.push_back(new_peer);
+            }
         }
         let mut data = self.store.write().await?;
 
@@ -213,12 +276,17 @@ impl ChordNode {
     #[instrument]
     pub async fn process_successor_departure(
         self: Arc<Self>,
-        new_successor: SocketAddr,
+        new_successor: Vec<SocketAddr>,
     ) -> Result<(), InternalError> {
-        let mut successor = self.successor.write().await?;
+        let mut successor_list = self.successor_list.write().await?;
 
-        info!(new_successor=?new_successor, old_successor=?successor, "Setting successor");
-        *successor = new_successor;
+        let old_successor = successor_list.pop_front();
+
+        info!(
+            "Removing {:?} from successor_list, {:?} is now the immediate successor",
+            old_successor,
+            successor_list.front()
+        );
 
         Ok(())
     }
@@ -245,25 +313,26 @@ impl ChordNode {
 
     #[instrument]
     pub async fn shut_down(self: Arc<Self>) -> Result<(), InternalError> {
-        let successor = self.successor.read().await?;
+        let successor_list = self.successor_list.read().await?;
         let predecessor = self.predecessor.read().await?;
         let data = self
             .store
             .read()
             .await?
             .iter()
-            // .cloned()
             .map(|(_, v)| v.clone())
             .collect::<Vec<_>>();
 
-        Client::notify_predecessor_departure(&successor, &predecessor, data)
-            .await
-            .map_err(|_| InternalError {
-                message: "Notifying predecessor failed".to_string(),
-            })?;
+        if let Some(successor) = successor_list.front() {
+            Client::notify_predecessor_departure(&successor, &predecessor, data)
+                .await
+                .map_err(|_| InternalError {
+                    message: "Notifying predecessor failed".to_string(),
+                })?;
+        }
 
         if let Some(predecessor) = predecessor.to_owned() {
-            Client::notify_successor_departure(&predecessor, &successor)
+            Client::notify_successor_departure(&predecessor, &successor_list.as_cloned_vec())
                 .await
                 .map_err(|_| InternalError {
                     message: "notifying successor failed".to_string(),
@@ -282,20 +351,20 @@ impl ChordNode {
         self: Arc<Self>,
     ) -> Result<
         (
-            SocketAddr,
+            Vec<SocketAddr>,
             Option<SocketAddr>,
             HashMap<Key, String>,
             [Option<SocketAddr>; 256],
         ),
         InternalError,
     > {
-        let succ = self.successor.read().await?;
+        let succs = self.successor_list.read().await?.as_cloned_vec();
         let pred = self.predecessor.read().await?;
         let store = self.store.read().await?;
         let finger_map = self.finger_map.read().await?;
 
         Ok((
-            succ.clone(),
+            succs.clone(),
             pred.clone(),
             store.clone(),
             finger_map.clone(),
@@ -340,6 +409,37 @@ impl Locatable for SocketAddr {
     }
 }
 
+trait AsClonedVec<T> {
+    fn as_cloned_vec(&self) -> Vec<T>;
+}
+
+impl<T> AsClonedVec<T> for tokio::sync::RwLockReadGuard<'_, VecDeque<T>>
+where
+    T: Clone,
+{
+    fn as_cloned_vec(&self) -> Vec<T> {
+        self.iter().map(|x| x.clone()).collect()
+    }
+}
+
+impl<T> AsClonedVec<T> for tokio::sync::RwLockWriteGuard<'_, VecDeque<T>>
+where
+    T: Clone,
+{
+    fn as_cloned_vec(&self) -> Vec<T> {
+        self.iter().map(|x| x.clone()).collect()
+    }
+}
+
+impl<T> AsClonedVec<T> for VecDeque<T>
+where
+    T: Clone,
+{
+    fn as_cloned_vec(&self) -> Vec<T> {
+        self.iter().map(|x| x.clone()).collect()
+    }
+}
+
 mod tests {
     use super::{ChordNode, Client, InternalError, Key};
     use crate::utils::ipv6_loopback_socketaddr as a;
@@ -370,7 +470,7 @@ mod tests {
         let ctx = Client::find_successor_context();
         ctx.expect().never();
 
-        let node = Arc::new(ChordNode::new(a(1111), a(1111)));
+        let node = Arc::new(ChordNode::new(a(1111), Some(a(1111)), 1));
 
         let key = h("any value");
 
@@ -387,17 +487,19 @@ mod tests {
             Ok(a(1111))
         });
 
-        let node = Arc::new(ChordNode::new(a(1111), a(1111)));
-        let other_node = ChordNode::join(a(2222), node.addr).await.unwrap();
+        let node = Arc::new(ChordNode::new(a(1111), Some(a(1111)), 1));
+        let other_node = ChordNode::join(a(2222), node.addr, 1).await.unwrap();
 
         dbg!(Key::from_addr(a(2222)));
         dbg!(Key::from_addr(a(1111)));
 
         assert_eq!(
             other_node
-                .successor
+                .successor_list
                 .read::<InternalError>()
                 .await
+                .unwrap()
+                .front()
                 .unwrap()
                 .clone(),
             node.addr

@@ -4,7 +4,7 @@ use tonic::Status;
 
 #[derive(Clone, Debug)]
 pub struct InternalError {
-    pub message: String,
+    pub message: String, // TODO: should be &str
 }
 
 impl LockError for InternalError {
@@ -37,7 +37,7 @@ pub enum ClientGetError {
     NotFound,
     BadLocation,
     ConnectionFailed(ConnectionError),
-    MalformedResponse(String),
+    MalformedResponse(String), // TODO: should be &str
     GRPCStatus(Status),
 }
 

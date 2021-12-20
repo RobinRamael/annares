@@ -1,6 +1,6 @@
 use opentelemetry::{global, propagation::Injector};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{AddrParseError, SocketAddr};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use tonic::Code;
@@ -90,35 +90,41 @@ impl Client {
     }
 
     #[instrument]
-    pub async fn get_predecessor(addr: &SocketAddr) -> Result<Option<SocketAddr>, ClientError> {
+    pub async fn get_neighbours(
+        addr: &SocketAddr,
+    ) -> Result<(Option<SocketAddr>, Vec<SocketAddr>), ClientError> {
         let mut client = Self::connect(addr)
             .await
             .map_err(ClientError::ConnectionFailed)?;
 
-        let mut request = Request::new(GetPredecessorRequest {});
+        let mut request = Request::new(GetNeighboursRequest {});
 
         inject_span!(&mut request);
 
         let resp = client
             .grpc_client
-            .get_predecessor(request)
+            .get_neighbours(request)
             .await
             .map_err(ClientError::GRPCStatus)?;
 
-        let GetPredecessorReply { addr: pred_addr } = resp.into_inner();
+        let GetNeighboursReply {
+            predecessor,
+            successors,
+        } = resp.into_inner();
 
-        match pred_addr {
-            Some(a) => {
-                a.parse::<SocketAddr>()
-                    .map_err(|_| {
-                        ClientError::MalformedResponse(format!("could not parse address {}", a))
-                    })
-                    .map(Some)
+        let predecessor: Option<SocketAddr> = predecessor
+            .map_or(Ok(None), |a| Ok(Some(a.parse::<SocketAddr>()?)))
+            .map_err(|e: AddrParseError| {
+                ClientError::MalformedResponse("failed to parse addr".to_string())
+            })?;
 
-                // Ok(Some(x))
-            }
-            None => Ok(None),
-        }
+        let successors: Vec<SocketAddr> = successors
+            .iter()
+            .map(|s| s.parse::<SocketAddr>())
+            .collect::<Result<Vec<SocketAddr>, AddrParseError>>()
+            .map_err(|e| ClientError::MalformedResponse("failed to parse addr".to_string()))?;
+
+        Ok((predecessor, successors))
     }
 
     #[instrument]
@@ -203,14 +209,14 @@ impl Client {
     #[instrument]
     pub async fn notify_successor_departure(
         addr: &SocketAddr,
-        new_successor: &SocketAddr,
+        new_successors: &Vec<SocketAddr>,
     ) -> Result<(), ClientError> {
         let mut client = Self::connect(addr)
             .await
             .map_err(ClientError::ConnectionFailed)?;
 
         let mut request = Request::new(SuccDepartureRequest {
-            successor: new_successor.to_string(),
+            successors: new_successors.iter().map(|a| a.to_string()).collect(),
         });
 
         inject_span!(&mut request);
@@ -293,7 +299,7 @@ impl Client {
         addr: &SocketAddr,
     ) -> Result<
         (
-            SocketAddr,
+            Vec<SocketAddr>,
             Option<SocketAddr>,
             HashMap<Key, String>,
             Vec<(u8, Option<SocketAddr>)>,
@@ -315,15 +321,17 @@ impl Client {
             .map_err(ClientError::GRPCStatus)?;
 
         let GetStatusReply {
-            successor,
+            successors,
             predecessor,
             store,
             fingers,
         } = response.into_inner();
 
-        let successor = successor.parse().map_err(|_| {
-            ClientError::MalformedResponse(format!("could not parse address {}", addr))
-        })?;
+       let successors: Vec<SocketAddr> = successors
+            .iter()
+            .map(|s| s.parse::<SocketAddr>())
+            .collect::<Result<Vec<SocketAddr>, AddrParseError>>()
+            .map_err(|_| ClientError::MalformedResponse("Could not parse address".to_string()))?;
 
         let predecessor = match predecessor {
             Some(a) => {
@@ -364,7 +372,7 @@ impl Client {
             parsed_fingers.push((finger.start_idx as u8, finger_addr))
         }
 
-        Ok((successor, predecessor, store, parsed_fingers))
+        Ok((successors, predecessor, store, parsed_fingers))
     }
 }
 struct MetadataMap<'a>(&'a mut tonic::metadata::MetadataMap);

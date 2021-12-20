@@ -37,7 +37,7 @@ struct Cli {
     pub check_interval: u64,
 
     #[structopt(short = "r", long = "--redundancy", default_value = "3")]
-    pub redundancy: u8,
+    pub redundancy: usize,
 }
 
 #[tokio::main]
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .try_init()?;
 
-    let root = span!(tracing::Level::INFO, "app_start", work_units = 2);
+    let root = span!(tracing::Level::INFO, "app_start", work_units = 2, args=?args);
     let _enter = root.enter();
 
     info!("Initializing {}", args.port);
@@ -63,10 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = ipv6_loopback_socketaddr(args.port);
 
     let node = Arc::new(match args.bootstrap_peer {
-        Some(peer) => ChordNode::join(addr, peer)
+        None => ChordNode::new(addr, None, args.redundancy),
+        Some(peer) => ChordNode::join(addr, peer, args.redundancy)
             .await
             .expect("Failed to join network"),
-        None => ChordNode::new(addr, addr),
     });
 
     info!(port = args.port, "Starting stabilize loop...");

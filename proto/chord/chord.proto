@@ -4,7 +4,7 @@ package chord;
 
 service ChordService {
   rpc findSuccessor (FindSuccessorRequest) returns (FindSuccessorReply);
-  rpc getPredecessor (GetPredecessorRequest) returns (GetPredecessorReply);
+  rpc getNeighbours (GetNeighboursRequest) returns (GetNeighboursReply);
   rpc notify (NotifyRequest) returns (NotifyReply);
   rpc predecessorDeparture (PredDepartureRequest) returns (PredDepartureReply);
   rpc successorDeparture (SuccDepartureRequest) returns (SuccDepartureReply);
@@ -26,10 +26,11 @@ message FindSuccessorReply {
   string addr = 1;
 }
 
-message GetPredecessorRequest {}
+message GetNeighboursRequest {}
 
-message GetPredecessorReply {
-  optional string addr = 1;
+message GetNeighboursReply {
+  optional string predecessor = 1;
+  repeated string successors = 2;
 }
 
 message NotifyRequest {
@@ -48,7 +49,7 @@ message PredDepartureRequest {
 message PredDepartureReply {}
 
 message SuccDepartureRequest {
-  string successor = 1;
+  repeated string successors = 1;
 }
 
 message SuccDepartureReply {}
@@ -84,7 +85,7 @@ message Finger {
 }
 
 message GetStatusReply {
-  string successor = 1;
+  repeated string successors = 1;
   optional string predecessor = 2;
   repeated KeyValuePair store = 3;
   repeated Finger fingers = 4;
